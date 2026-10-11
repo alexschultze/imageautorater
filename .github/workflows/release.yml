@@ -1,7 +1,7 @@
 name: Release
 
 # Push a tag such as v0.1.0 to build the wheel and attach it to a GitHub release.
-# The repository is private, so users install from the release asset, not from git+https (see README).
+# Users install from the git tag (see README); the wheel is attached for convenience.
 on:
   push:
     tags: ["v*"]
@@ -24,4 +24,4 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* overrides.txt --title "$GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes

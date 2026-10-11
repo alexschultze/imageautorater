@@ -11,25 +11,27 @@ Commands: `imageautorater-rate` (also `python -m imageautorater`) and `imageauto
 
 ## Install
 
-Needs [uv](https://docs.astral.sh/uv/) (`winget install astral-sh.uv`). Python 3.12 or newer; uv fetches it if needed. Installation and the first model downloads need internet.
+Needs [uv](https://docs.astral.sh/uv/) (`winget install astral-sh.uv`) and git. Python 3.12 or newer; uv fetches it if needed. Installation and the first model downloads need internet.
 
 ```
 uv venv
-uv pip install "imageautorater @ <wheel from the GitHub release>" --torch-backend=auto
+uv pip install "imageautorater @ git+https://github.com/alexschultze/imageautorater" --torch-backend=auto
 ```
 
-`--torch-backend=auto` picks the PyTorch build for your hardware (NVIDIA CUDA, Intel XPU, otherwise CPU). The repository is private, so install from the wheel attached to a release (`gh release download`), not from `git+https`. For person identification add the `faces` extra together with the override file from the same release:
+`--torch-backend=auto` picks the PyTorch build for your hardware (NVIDIA CUDA, Intel XPU, otherwise CPU). The commands are then in the environment: `.venv\Scripts\imageautorater-rate` and `.venv\Scripts\imageautorater-gallery` (or activate it with `.venv\Scripts\activate`).
 
-```
-uv pip install "imageautorater[faces] @ <wheel>" --override overrides.txt --torch-backend=auto
-```
-
-(`facenet-pytorch` pins an old torch; `overrides.txt` replaces those pins.)
+- **Private repository:** git must be signed in to GitHub. With the GitHub CLI: `gh auth login`, then `gh auth setup-git`. Over SSH use `git+ssh://git@github.com/alexschultze/imageautorater.git` instead.
+- **A specific version:** add a tag, branch or commit after the URL: `...imageautorater@v0.1.0`.
+- **Update:** repeat the same command with `--upgrade`.
+- **Person identification** (optional): `uv pip install --no-deps facenet-pytorch`. It has to be installed without dependencies because it pins an old torch; everything else it needs is already installed.
+- **RAW files** (optional): `uv pip install rawpy`.
 
 ### Development
 
 ```
-uv sync --group dev     # CPU torch, see pyproject.toml
+git clone https://github.com/alexschultze/imageautorater
+cd imageautorater
+uv sync --group dev     # CPU torch, see pyproject.toml; add --extra faces for person identification
 uv run pytest           # fast; uses stand-ins for the models, downloads nothing
 uv run imageautorater-rate --help
 uv build                # wheel in dist/
@@ -39,7 +41,7 @@ Layout:
 
 ```
 pyproject.toml          package metadata, dependencies, entry points, uv settings
-overrides.txt           pins replaced when installing the `faces` extra
+uv.lock                 locked development environment
 src/imageautorater/
     pipeline.py         rating, keywords, faces (imageautorater-rate)
     gallery.py          web page builder (imageautorater-gallery)
@@ -49,7 +51,7 @@ PLAN.md                 plan for the GUI and distribution
 faces/                  your face ground truth in a source checkout (git-ignored, never commit)
 ```
 
-Releases: bump `version` in `pyproject.toml`, tag `vX.Y.Z`, push the tag.
+Releases: bump `version` in `pyproject.toml`, tag `vX.Y.Z`, push the tag. The release gets the wheel attached; installing from the git tag (see above) needs nothing else.
 
 ## Run
 

@@ -1,6 +1,0 @@
-# Used with:  uv pip install ".[faces]" --override overrides.txt
-# facenet-pytorch pins old versions of these; they work fine with current releases, so the pins are replaced.
-torch>=2.2
-torchvision>=0.17
-numpy>=1.26
-pillow>=10.2

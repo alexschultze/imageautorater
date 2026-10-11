@@ -20,8 +20,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Person identification. facenet-pytorch pins an old torch, so install this extra together with overrides.txt:
-#   uv pip install ".[faces]" --override overrides.txt
+# Person identification, for development (`uv sync --extra faces`; the override below replaces facenet-pytorch's old pins).
+# End users install it with `uv pip install --no-deps facenet-pytorch` (see README).
 faces = ["facenet-pytorch>=2.6"]
 raw = ["rawpy"]
 
