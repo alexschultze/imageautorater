@@ -52,7 +52,7 @@ def test_a_replaced_photo_does_not_inherit_the_old_name(cli, tmp_path):
     cli(p, "--faces-only")
     (cli.faces_dir / "person_0001").rename(cli.faces_dir / "Alice")
     cli(p, "--faces-only")
-    make_photo(p, "x.png", "C")        # same name, now a different person
+    make_photo(p, "x.png", "C", size=120)   # same name, now a different person (a different file, so a different size)
     _, res = cli(p, "--faces-only")
     assert people_of(res) == {"x.png": [None], "y.png": ["Alice"]}
 

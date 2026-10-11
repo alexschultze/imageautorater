@@ -49,10 +49,12 @@ class FakeClip:
         return [v.tolist() for v in self.text_vecs]
 
 
-def make_photo(root: Path, rel: str, who: str):
+def make_photo(root: Path, rel: str, who: str, size: int = 100):
+    """size: a real replacement of a photo has a different file size, which is what change detection relies on
+    (file size + modified time in whole seconds, so that re-syncing a file does not look like an edit)."""
     p = root / rel
     p.parent.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", (100, 100), (PIXEL[who], 5, 5)).save(p, format="PNG")  # PNG: exact pixel values
+    Image.new("RGB", (size, size), (PIXEL[who], 5, 5)).save(p, format="PNG")  # PNG: exact pixel values
     return p
 
 
