@@ -1,0 +1,32 @@
+# --- personal data: NEVER commit -------------------------------------------------------------------------
+# Face crops, reference photos and face embeddings of real people (biometric data)
+/faces/
+# Per-photo-folder outputs if a photo folder is ever placed inside the repository
+iqa_scores.json
+iqa_scores.json.bak*
+iqa_results.json
+gallery.html
+.iqa_thumbs/
+*.xmp
+*.xmp.bak
+# scratch
+alex.txt
+
+# --- python / uv ------------------------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- editors / OS -----------------------------------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.claude/

@@ -1,0 +1,27 @@
+name: Release
+
+# Push a tag such as v0.1.0 to build the wheel and attach it to a GitHub release.
+# The repository is private, so users install from the release asset, not from git+https (see README).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Check the tag matches the package version
+        run: |
+          version=$(uv run --no-project python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != pyproject version $version"; exit 1; }
+      - name: Build
+        run: uv build
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* overrides.txt --title "$GITHUB_REF_NAME" --generate-notes

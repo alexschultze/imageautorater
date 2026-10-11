@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install (pyproject points torch at the CPU index for `uv sync`, so no GPU libraries are downloaded)
+        run: uv sync --group dev
+      - name: Tests
+        run: uv run pytest -q
+      - name: Build wheel (smoke test)
+        run: uv build

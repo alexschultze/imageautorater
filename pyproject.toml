@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "imageautorater"
+version = "0.1.0"
+description = "Rate photos with pyiqa quality models, add keywords and recognised people to XMP sidecars, and browse the ranking in a web page."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pyiqa>=0.1.16",
+    "torch>=2.2",
+    "torchvision>=0.17",
+    "numpy>=1.26",
+    "pillow>=10.2",
+    "transformers>=4.40",
+    "requests>=2.31",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+# Person identification. facenet-pytorch pins an old torch, so install this extra together with overrides.txt:
+#   uv pip install ".[faces]" --override overrides.txt
+faces = ["facenet-pytorch>=2.6"]
+raw = ["rawpy"]
+
+[project.scripts]
+imageautorater-rate = "imageautorater.pipeline:main"
+imageautorater-gallery = "imageautorater.gallery:main"
+# the GUI (PLAN.md) will add:  [project.gui-scripts]  imageautorater = "imageautorater.gui:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/imageautorater"]
+
+# Development and CI (`uv sync`) use the small CPU build of torch. These tables are not part of the built wheel, so
+# end users are not affected: they pick the right build with `uv pip install ... --torch-backend=auto` (see PLAN.md).
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+
+[tool.uv]
+# facenet-pytorch pins torch<2.3 / torchvision<0.18 / numpy<1.25 / pillow<10.3; replace those pins when it is installed.
+override-dependencies = ["torch>=2.2", "torchvision>=0.17", "numpy>=1.26", "pillow>=10.2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
