@@ -58,6 +58,37 @@ def make_photo(root: Path, rel: str, who: str, size: int = 100):
     return p
 
 
+def make_jpeg(root: Path, rel: str, with_exif: bool = True, seed: int = 0, maker_note: bytes = b"\x01\x02\x03MAKERNOTE\x00\xff"):
+    """A noisy JPEG (so the picture data is non-trivial) with ordinary camera-style EXIF and a maker note."""
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    pixels = np.random.default_rng(seed).integers(0, 255, (120, 160, 3), dtype=np.uint8)
+    kwargs = {}
+    if with_exif:
+        exif = Image.Exif()
+        exif[0x010F], exif[0x0110], exif[0x0112] = "TestMake", "TestModel", 6
+        sub = exif.get_ifd(0x8769)
+        sub[0x9003], sub[0x927C] = "2024:01:02 03:04:05", maker_note
+        kwargs["exif"] = exif.tobytes()
+    Image.fromarray(pixels).save(p, "JPEG", quality=85, **kwargs)
+    return p
+
+
+def write_results(folder: Path, spec: dict):
+    """Write an iqa_results.json. spec: rel -> dict(rating=, models={name: (stars, score)}, tags=[...], people=[...]);
+    'tags'/'people' left out means 'not analysed'."""
+    images = {}
+    for rel, s in spec.items():
+        models = {m: {"rating": r, "score": sc} for m, (r, sc) in s.get("models", {}).items()}
+        e = {"rating": s.get("rating"), "rating_mean": s.get("mean", s.get("rating")), "models": models}
+        if "tags" in s:
+            e["tags"] = {t: 0.5 for t in s["tags"]}
+        if "people" in s:
+            e["people"] = [{"name": n, "similarity": 0.9, "cluster": 1, "box": [0, 0, 1, 1]} for n in s["people"]]
+        images[rel] = e
+    (folder / pl.RESULTS_NAME).write_text(json.dumps({"mode": "absolute", "models": {}, "images": images}), encoding="utf-8")
+
+
 @pytest.fixture
 def stubbed(monkeypatch):
     monkeypatch.setattr(pl, "Faces", FakeFaces)

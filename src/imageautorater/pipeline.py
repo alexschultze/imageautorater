@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Rate a folder of photos with every available pyiqa no-reference model and
-write sidecar .xmp files.
+"""Rate a folder of photos with pyiqa no-reference models, add image-type keywords and recognised people,
+and save everything in the photo folder:
 
-Each sidecar gets, per model <m>:
-  iqa:Rating_<m>   1-5 stars for that model
-  iqa:Score_<m>    raw model score
-plus
-  xmp:Rating       rounded mean of the per-model ratings (read by Lightroom,
-                   darktable, digiKam, Bridge, ...)
-  iqa:RatingMean   unrounded mean
-Existing sidecars are updated in place; all other XMP content is preserved.
+  iqa_results.json   per image: stars and raw score for every model, mean stars, keywords, people
+  iqa_scores.json    the persistent cache (resumes interrupted runs)
+
+This command does NOT write any metadata into or next to your photos. Do that as a deliberate last step:
+  imageautorater-write-xmp   <folder>   XMP sidecar files (photo.xmp), any format, photos untouched
+  imageautorater-write-exif  <folder>   metadata inside JPEG/PNG files (EXIF rating + keywords + XMP)
+  imageautorater-gallery     <folder>   a web page to browse the ranking
 
 Content analysis (on by default; needs `transformers`, and `facenet-pytorch` for faces):
   * Image type keywords via CLIP zero-shot classification (portrait, landscape, food, ...).
@@ -18,9 +17,8 @@ Content analysis (on by default; needs `transformers`, and `facenet-pytorch` for
     photo folder you process. faces/<Name>/ holds confirmed faces of that person (crops you moved there and/or
     reference photos you dropped in). Unrecognised faces are grouped into faces/person_NNNN/ for you to
     name by renaming the folder or moving crops. Names then carry over to every photo folder.
-  Keywords and recognised names go into dc:subject (what Lightroom, digiKam, darktable
-  show as keywords). Keywords the script added earlier are replaced on re-runs; keywords
-  you added yourself are never touched.
+  Keywords (recognised names first, then image types) are stored in iqa_results.json; the write commands turn them
+  into photo keywords later.
 
 Scores, CLIP embeddings and face embeddings are cached in <folder>/iqa_scores.json so an
 interrupted run resumes and re-runs only score new (model, image) pairs.
@@ -28,7 +26,7 @@ interrupted run resumes and re-runs only score new (model, image) pairs.
 Examples:
   imageautorater-rate D:\\Photos
   imageautorater-rate D:\\Photos --models musiq topiq_nr clipiqa
-  imageautorater-rate D:\\Photos --mode percentile --dry-run
+  imageautorater-rate D:\\Photos --mode percentile --limit 10
   python -m imageautorater D:\\Photos --faces-only
 """
 import argparse
@@ -38,53 +36,12 @@ import os
 import re
 import sys
 import time
-import xml.etree.ElementTree as ET
 from pathlib import Path
-
-NS = {
-    "x": "adobe:ns:meta/",
-    "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
-    "xmp": "http://ns.adobe.com/xap/1.0/",
-    "iqa": "http://ns.example.com/pyiqa/1.0/",
-    "dc": "http://purl.org/dc/elements/1.1/",
-}
-# namespaces commonly found in Lightroom/darktable sidecars, registered so ET keeps their prefixes
-EXTRA_NS = {
-    "crs": "http://ns.adobe.com/camera-raw-settings/1.0/",
-    "lr": "http://ns.adobe.com/lightroom/1.0/",
-    "photoshop": "http://ns.adobe.com/photoshop/1.0/",
-    "exif": "http://ns.adobe.com/exif/1.0/",
-    "tiff": "http://ns.adobe.com/tiff/1.0/",
-    "aux": "http://ns.adobe.com/exif/1.0/aux/",
-    "xmpMM": "http://ns.adobe.com/xap/1.0/mm/",
-    "stEvt": "http://ns.adobe.com/xap/1.0/sType/ResourceEvent#",
-    "darktable": "http://darktable.sf.net/",
-    "mwg-rs": "http://www.metadataworkinggroup.com/schemas/regions/",
-    "Iptc4xmpCore": "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/",
-}
-for _p, _u in {**EXTRA_NS, **NS}.items():
-    ET.register_namespace(_p, _u)
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
 RAW_EXT = {".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef", ".srw"}
 CACHE_NAME = "iqa_scores.json"
 RESULTS_NAME = "iqa_results.json"
-
-EMPTY_XMP = (
-    '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
-    '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
-    '<rdf:Description rdf:about=""/></rdf:RDF></x:xmpmeta>'
-)
-
-
-def q(prefix, name):
-    return "{%s}%s" % (NS[prefix], name)
-
-
-def xml_name(model: str) -> str:
-    """Model name -> valid XML name part (e.g. 'clipiqa+' -> 'clipiqaplus')."""
-    return re.sub(r"[^A-Za-z0-9_]", "_", model.replace("+", "plus"))
-
 
 def find_images(folder: Path, recursive: bool, include_raw: bool):
     exts = IMG_EXT | (RAW_EXT if include_raw else set())
@@ -887,97 +844,6 @@ def run_content(folder, paths, rel, cache, cache_path, a, faces_dir):
     return content
 
 
-def keywords_for(entry):
-    """Keyword list for one image's content entry: recognised people first, then image-type tags."""
-    kws = []
-    for pr in entry.get("people", []):
-        if pr["name"] and pr["name"] not in kws:
-            kws.append(pr["name"])
-    for t in entry.get("tags", {}):
-        if t not in kws:
-            kws.append(t)
-    return kws
-
-
-def merge_keywords(desc, new):
-    """Replace keywords this script added earlier (iqa:AutoKeywords); keep every user keyword."""
-    prev = {k for k in (desc.get(q("iqa", "AutoKeywords")) or "").split("|") if k}
-    subj = desc.find(q("dc", "subject"))
-    if subj is None:
-        if not new and not prev:
-            return
-        subj = ET.SubElement(desc, q("dc", "subject"))
-    bag = next(iter(subj), None)
-    if bag is None:
-        bag = ET.SubElement(subj, q("rdf", "Bag"))
-    existing = []
-    for li in list(bag):
-        txt = (li.text or "").strip()
-        if txt in prev:
-            bag.remove(li)
-        else:
-            existing.append(txt.lower())
-    added = []  # only keywords we actually added, so a keyword you already had is never removed later
-    for k in new:
-        if k.lower() not in existing:
-            ET.SubElement(bag, q("rdf", "li")).text = k
-            added.append(k)
-    if added:
-        desc.set(q("iqa", "AutoKeywords"), "|".join(added))
-    elif q("iqa", "AutoKeywords") in desc.attrib:
-        del desc.attrib[q("iqa", "AutoKeywords")]
-    if len(bag) == 0:
-        desc.remove(subj)
-
-
-def sidecar_path(img: Path, darktable_naming: bool):
-    return img.with_name(img.name + ".xmp") if darktable_naming else img.with_suffix(".xmp")
-
-
-def write_sidecar(xmp_path: Path, per_model: dict, set_rating: bool, keywords=None):
-    """per_model: {model: (stars, score)} (may be empty); keywords: list to merge into dc:subject, None = leave alone"""
-    if xmp_path.exists():
-        try:
-            root = ET.parse(xmp_path).getroot()
-        except ET.ParseError:
-            xmp_path.replace(xmp_path.with_suffix(".xmp.bak"))
-            root = ET.fromstring(EMPTY_XMP)
-    else:
-        root = ET.fromstring(EMPTY_XMP)
-
-    desc = root.find(".//" + q("rdf", "Description"))
-    if desc is None:
-        rdf = root.find(".//" + q("rdf", "RDF"))
-        desc = ET.SubElement(rdf, q("rdf", "Description"), {q("rdf", "about"): ""})
-
-    def put(prefix, name, value):
-        for child in desc.findall(q(prefix, name)):  # element form would shadow the attribute
-            desc.remove(child)
-        desc.set(q(prefix, name), value)
-
-    for model, (stars, score) in (per_model or {}).items():
-        n = xml_name(model)
-        put("iqa", f"Rating_{n}", str(stars))
-        put("iqa", f"Score_{n}", f"{score:.5f}")
-
-    if per_model:
-        mean = sum(s for s, _ in per_model.values()) / len(per_model)
-        put("iqa", "RatingMean", f"{mean:.2f}")
-        put("iqa", "ModelCount", str(len(per_model)))
-        if set_rating:
-            put("xmp", "Rating", str(int(round(mean))))
-    if keywords is not None:
-        merge_keywords(desc, keywords)
-
-    ET.indent(root)
-    xmp_path.write_text(
-        '<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
-        + ET.tostring(root, encoding="unicode")
-        + '\n<?xpacket end="w"?>\n',
-        encoding="utf-8",
-    )
-
-
 def first_run_without_persons(cache, faces_dir):
     """True when no person is known yet (nothing confirmed in the faces folder) and this photo folder has no
     analysed faces."""
@@ -1024,11 +890,8 @@ def main():
     ap.add_argument("--device", help="cuda / cpu (default: auto)")
     ap.add_argument("--max-side", type=int, default=None,
                     help="downscale long side before scoring; 0 = full size (default: 1024 for the cpu preset, 2048 otherwise)")
-    ap.add_argument("--darktable-naming", action="store_true", help="write IMG.ext.xmp instead of IMG.xmp")
-    ap.add_argument("--no-rating", action="store_true", help="don't touch xmp:Rating (only write iqa:* fields)")
     ap.add_argument("--json-out", type=Path, help=f"combined results JSON (default: <folder>/{RESULTS_NAME})")
     ap.add_argument("--fresh", action="store_true", help="start a new score cache (the old one is kept as .bak)")
-    ap.add_argument("--dry-run", action="store_true", help="score and report, write no sidecars")
     ap.add_argument("--iqa", action=argparse.BooleanOptionalAction, default=True,
                     help="quality scoring with pyiqa (default on; --no-iqa for keywords/people only)")
     ap.add_argument("--classify", action=argparse.BooleanOptionalAction, default=True,
@@ -1133,7 +996,6 @@ def main():
     content = {}
     if a.classify or a.faces:
         content = run_content(a.folder, paths, rel, cache, cache_path, a, faces_dir)
-    keywords = {k: keywords_for(v) for k, v in content.items()} if content else None
 
     # Combine every model in the cache (honouring --exclude), not just this run's --models,
     # so a partial run never shrinks the ratings built up earlier.
@@ -1152,21 +1014,13 @@ def main():
     write_results_json(json_path, a, per_image, used, cache, content)
     print(f"Wrote combined results ({len(set(per_image) | set(content))} images): {json_path}")
 
-    written = 0
-    for p in paths:
-        pm = per_image.get(rel[p])
-        kw = keywords.get(rel[p]) if keywords is not None else None
-        if not pm and not kw:
-            # nothing to add; still revisit a sidecar that carries keywords we added earlier (they may need removing)
-            sc = sidecar_path(p, a.darktable_naming)
-            if kw is None or not sc.exists() or "AutoKeywords" not in sc.read_text(encoding="utf-8", errors="ignore"):
-                continue
-        mean = f"{sum(s for s, _ in pm.values()) / len(pm):4.2f} ({len(pm)} models)" if pm else "--"
-        print(f"{mean}  {rel[p]}" + (f"  [{', '.join(kw)}]" if kw else ""))
-        if not a.dry_run:
-            write_sidecar(sidecar_path(p, a.darktable_naming), pm, not a.no_rating, kw)
-            written += 1
-    print("Dry run, nothing written." if a.dry_run else f"Wrote {written} sidecars.")
+    named = sum(1 for e in content.values() for pr in e.get("people", []) if pr.get("name"))
+    print(f"\nDone: {len(set(per_image) | set(content))} images, {len(used)} models"
+          + (f", {named} faces named" if content else "") + ".")
+    print("Nothing was written into or next to your photos. Next steps:")
+    print(f'  imageautorater-write-xmp  "{a.folder}"    (XMP sidecar files)')
+    print(f'  imageautorater-write-exif "{a.folder}"    (inside JPEG/PNG files; asks first, --backup DIR available)')
+    print(f'  imageautorater-gallery    "{a.folder}"    (browse the ranking)')
 
 
 if __name__ == "__main__":

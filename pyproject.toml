@@ -27,6 +27,8 @@ raw = ["rawpy"]
 
 [project.scripts]
 imageautorater-rate = "imageautorater.pipeline:main"
+imageautorater-write-xmp = "imageautorater.write_xmp:main"
+imageautorater-write-exif = "imageautorater.write_exif:main"
 imageautorater-gallery = "imageautorater.gallery:main"
 # the GUI (PLAN.md) will add:  [project.gui-scripts]  imageautorater = "imageautorater.gui:main"
 

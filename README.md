@@ -1,13 +1,20 @@
 # imageautorater
 
-Rates a folder of photos and writes the results as XMP sidecar files and a combined JSON file. Your image files are only read, never modified. A second command builds a web page to browse the ranking.
+Rates a folder of photos and saves the results in a JSON file. **The rating itself writes nothing into or next to your photos.** Storing the results in the photos is a separate, deliberate last step, and a third command builds a web page to browse the ranking.
 
 - **Quality:** scored with [pyiqa](https://github.com/chaofengc/IQA-PyTorch) no-reference models, giving 1-5 stars per model.
 - **Image type keywords:** CLIP zero-shot classification (portrait, landscape, food, night, ...).
 - **People:** faces are detected and grouped, then named by you.
 - **Gallery:** `imageautorater-gallery` shows the best photos per folder, sortable by any model.
 
-Commands: `imageautorater-rate` (also `python -m imageautorater`) and `imageautorater-gallery`.
+Commands, in the order you use them:
+
+| Command | Does | Touches your photos? |
+|---|---|---|
+| `imageautorater-rate` (also `python -m imageautorater`) | scores, keywords, faces; writes `iqa_results.json` | no (read only) |
+| `imageautorater-write-xmp` | writes the results into XMP sidecar files (`photo.xmp`) | no |
+| `imageautorater-write-exif` | writes the results inside JPEG and PNG files | **yes, metadata only** |
+| `imageautorater-gallery` | builds a web page of the ranking | no |
 
 ## Install
 
@@ -43,7 +50,10 @@ Layout:
 pyproject.toml          package metadata, dependencies, entry points, uv settings
 uv.lock                 locked development environment
 src/imageautorater/
-    pipeline.py         rating, keywords, faces (imageautorater-rate)
+    pipeline.py         rating, keywords, faces (imageautorater-rate); writes only JSON and the faces folder
+    metadata.py         XMP building/merging shared by the two writers (no torch)
+    write_xmp.py        XMP sidecar files (imageautorater-write-xmp)
+    write_exif.py       metadata inside JPEG/PNG files (imageautorater-write-exif)
     gallery.py          web page builder (imageautorater-gallery)
 tests/                  pytest
 .github/workflows/      ci.yml (tests on push/PR), release.yml (tag v* -> wheel on a GitHub release)
@@ -63,7 +73,6 @@ Subfolders are included by default (`--no-recursive` for the top folder only). U
 
 | Option | Effect |
 |---|---|
-| `--dry-run` | Do all the analysis, write no `.xmp` files |
 | `--preset auto\|cpu\|gpu\|all` | Model set. `auto` (default) picks `gpu` if a GPU is found (CUDA, Intel XPU, Apple MPS), otherwise `cpu` |
 | `--models musiq topiq_nr` | Score with exactly these models (overrides `--preset`) |
 | `--limit 10` | Only process the first 10 images (quick test) |
@@ -76,16 +85,29 @@ Subfolders are included by default (`--no-recursive` for the top folder only). U
 
 `imageautorater-rate --help` lists everything.
 
-## Output
+## Output of the rating
 
-- **`<photo>.xmp`** next to each image (or `<photo>.jpg.xmp` with `--darktable-naming`):
-  - `xmp:Rating`: the rounded mean of the per-model ratings
-  - `iqa:Rating_<model>` and `iqa:Score_<model>` for each model, plus `iqa:RatingMean`
-  - `dc:subject`: image-type keywords and recognised names
+Written in the photo folder, never next to the individual photos:
 
-  Existing sidecars are updated in place. Your own keywords and settings are kept. Use `--no-rating` to leave `xmp:Rating` alone.
-- **`iqa_results.json`** in the photo folder: all scores, ratings, keywords and people per image.
-- **`iqa_scores.json`** in the photo folder: the persistent cache.
+- **`iqa_results.json`**: per image the stars and raw score of every model, the mean stars, the keywords (recognised people first, then image types) and the people found. This is what the other commands read.
+- **`iqa_scores.json`**: the persistent cache (scores, CLIP and face embeddings).
+- **`faces\`**: crops to name people (see below).
+
+## Saving the results into your photos
+
+Run one of these after the rating. Both read `iqa_results.json`, only change what has changed, and can be re-run any time; both have `--dry-run`, `--no-rating`, `--no-keywords` and `--no-model-fields`.
+
+**`imageautorater-write-xmp <folder>`**: sidecar files, the photos stay untouched. `photo.jpg` gets `photo.xmp` (`--darktable-naming` for `photo.jpg.xmp`). Works for every format, including RAW. Existing sidecars are updated in place: develop settings and your own keywords are kept, and unchanged sidecars are not rewritten.
+
+**`imageautorater-write-exif <folder>`**: writes inside the files. **This modifies your photos**, so it asks before it starts (`--yes` skips the question, `--backup DIR` copies each original first, `--dry-run` only reports).
+
+- **JPEG:** EXIF `Rating`, `RatingPercent` and `XPKeywords` (what Windows shows as rating and tags) plus an embedded XMP packet with `xmp:Rating`, the keywords and the per-model scores (what Lightroom, darktable and digiKam read).
+- **PNG:** the XMP packet.
+- **Everything else** (TIFF, WebP, BMP, HEIC and all RAW formats) is never edited in place. The command lists them; use `imageautorater-write-xmp` for those.
+
+How the files stay safe: the compressed picture data is copied byte for byte (nothing is decoded or re-encoded), the existing EXIF and the camera's maker note keep their exact bytes and positions (only the three tags are added or updated), keywords you added yourself are kept while the ones this tool added earlier are replaced, each file is swapped in atomically with its modified time preserved, files that would not change are not rewritten, and a damaged or unusual file is skipped, never half-written. The pipeline's cache is updated so the next `imageautorater-rate` does not think the photos were edited and re-score them.
+
+Rating, keywords and people only reach the photos through these two commands, so you can review `iqa_results.json` or the gallery first.
 
 ## Naming people
 
