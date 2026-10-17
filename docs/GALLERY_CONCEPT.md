@@ -61,7 +61,7 @@ A ranker = a function photo -> number (higher is better). Built in:
 - **One dedicated folder**, default `<root>/.iqa_thumbs` (existing name; hidden, so it is never scanned as photos); override
   with `--thumb-dir`. Flat, name = `<path-hash>_<fingerprint-hash>_<size>.jpg` (existing scheme, so edited photos get fresh
   thumbs and old ones are reused).
-- **Max side 512 px** (default, was 360), JPEG q80-82, `--thumb-size` to change. Sizes coexist (size is in the name).
+- **Max side 360 px, unchanged default**, JPEG q82; `--thumb-size` can raise it (up to 512 is the intended ceiling). Sizes coexist (size is in the name), so existing 360 px thumbnails are reused as they are.
 - **All images in the results get a thumbnail**, not only the visible top 50, so any ranker or filter is instant. Generated in
   parallel (`ProcessPoolExecutor`, `--jobs`, default = CPU count - 1), only missing ones, resumable, progress line `[mm:ss]`,
   failures listed at the end and shown as a placeholder. `--thumbs-only` builds them without writing the page (can run
@@ -92,14 +92,14 @@ iqa_results.json (root)  ──►  gallery.py (build)  ──►  <out>/gallery
   is not needed (data stays embedded if `--embed` is given, for sending the page as one file, thumbs excluded).
 
 ## 6. Testing
-- pytest (existing style, stubbed, no downloads): data build for nested years, thumb size cap 512 and reuse, parallel
+- pytest (existing style, stubbed, no downloads): data build for nested years, thumb size cap (360 default) and reuse, parallel
   thumbs with a corrupt file, data file split, URL escaping for odd file names, `norm_score` unchanged.
 - JS: ranking/blend/overlap/delta functions extracted to `gallery_logic.js`, tested by a small pytest that runs `node` if
   available (skipped otherwise); plus one Playwright smoke test (Chromium is available in CI images) that loads the generated
   page from `file://`, ticks two years, checks 50 cards per year and an overlap number.
 
 ## 7. Implementation order (one run)
-1. Split thumbs module, 512 px, parallel + `--thumbs-only`, `--thumb-dir`.
+1. Split thumbs module, keep 360 px default, parallel + `--thumbs-only`, `--thumb-dir`.
 2. Page sources as files, build inliner, per-folder data files.
 3. Folder tree selector, group level, URL state.
 4. Rankers + blend + saved blends.
