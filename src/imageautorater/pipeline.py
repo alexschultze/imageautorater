@@ -631,7 +631,7 @@ def pick_device(arg):
 CPU_MODELS = ["musiq", "topiq_nr", "clipiqa", "liqe", "nima"]
 GPU_MODELS = CPU_MODELS + ["arniqa", "hyperiqa", "dbcnn"]   # maniqa is left out on purpose: ~4.5 s per photo on an RTX 2060
 NOT_PER_IMAGE = {"fid", "fid_dinov2", "sfid", "inception_score", "clipscore"}  # compare image sets / need text
-PRESET_MAX_SIDE = {"cpu": 1024, "gpu": 2048, "all": 2048}
+DEFAULT_MAX_SIDE = 1024   # one size for every preset and device, so scores from different runs are comparable
 
 
 def models_for_preset(preset):
@@ -1226,8 +1226,8 @@ def main():
     ap.add_argument("folder", type=Path)
     ap.add_argument("--preset", choices=["auto", "cpu", "gpu", "all"], default="auto",
                     help=f"model set when --models is not given. auto (default): gpu if a GPU is available, else cpu. "
-                         f"cpu = {' '.join(CPU_MODELS)} at --max-side 1024; gpu = cpu + {' '.join(GPU_MODELS[len(CPU_MODELS):])} "
-                         f"at 2048; all = every NR model (very slow without a GPU)")
+                         f"cpu = {' '.join(CPU_MODELS)}; gpu = cpu + {' '.join(GPU_MODELS[len(CPU_MODELS):])}; "
+                         f"all = every NR model (very slow without a GPU). All presets score at --max-side {DEFAULT_MAX_SIDE}")
     ap.add_argument("--models", nargs="+", help="only score with these pyiqa models (overrides --preset); "
                     "ratings always combine every model already in the cache")
     ap.add_argument("--exclude", nargs="+", default=[], help="models to skip")
@@ -1245,7 +1245,7 @@ def main():
                     help="with an NVIDIA GPU but a CPU-only PyTorch: install the CUDA build into this environment before "
                          "running. Default: ask when run in a terminal; --no-fix-gpu never offers it")
     ap.add_argument("--max-side", type=int, default=None,
-                    help="downscale long side before scoring; 0 = full size (default: 1024 for the cpu preset, 2048 otherwise)")
+                    help=f"downscale the long side before scoring; 0 = full size (default {DEFAULT_MAX_SIDE} for every preset and device)")
     ap.add_argument("--json-out", type=Path, help=f"combined results JSON (default: <folder>/{RESULTS_NAME})")
     ap.add_argument("--fresh", action="store_true", help="start a new score cache (the old one is kept as .bak)")
     ap.add_argument("--iqa", action=argparse.BooleanOptionalAction, default=True,
@@ -1319,13 +1319,13 @@ def main():
         dev = pick_device(a.device)
         preset = a.preset if a.preset != "auto" else ("cpu" if dev.type == "cpu" else "gpu")
         if a.max_side is None:
-            a.max_side = PRESET_MAX_SIDE[preset]
+            a.max_side = DEFAULT_MAX_SIDE
         models = a.models or models_for_preset(preset)
         models = [m for m in models if m not in set(a.exclude)]
         print(f"Preset: {preset} ({'--models given' if a.models else 'auto-selected for ' + str(dev)}), "
               f"{len(models)} models, max-side {a.max_side}")
     elif a.max_side is None:
-        a.max_side = PRESET_MAX_SIDE["gpu"]
+        a.max_side = DEFAULT_MAX_SIDE
     cache_path = a.folder / CACHE_NAME
     if a.fresh and cache_path.exists():
         print(f"--fresh: previous cache kept as {backup_file(cache_path).name}")

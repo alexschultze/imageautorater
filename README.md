@@ -107,7 +107,7 @@ Subfolders are included by default (`--no-recursive` for the top folder only). U
 | `--preset auto\|cpu\|gpu\|all` | Model set. `auto` (default) picks `gpu` if a GPU is found (CUDA, Intel XPU, Apple MPS), otherwise `cpu` |
 | `--models musiq topiq_nr` | Score with exactly these models (overrides `--preset`) |
 | `--limit 10` | Only process the first 10 images (quick test) |
-| `--max-side 1024` | Downscale before scoring (default: 1024 for the `cpu` preset, 2048 otherwise) |
+| `--max-side 1024` | Downscale the long side before scoring (default 1024 for every preset and device; `0` = full size) |
 | `--mode percentile` | Rank stars within the folder instead of using each model's score range |
 | `--faces-only` | Only detect, group and name faces |
 | `--no-iqa` / `--no-classify` / `--no-faces` | Turn off one part |
@@ -178,13 +178,13 @@ _faces\
 
 ## Presets
 
-| Preset | Models | `--max-side` |
-|---|---|---|
+| Preset | Models |
+|---|---|
 | `cpu` | musiq, topiq_nr, clipiqa, liqe, nima | 1024 |
-| `gpu` | the `cpu` set + arniqa, hyperiqa, dbcnn | 2048 |
-| `all` | every pyiqa no-reference model that scores single photos (about 69), very slow without a GPU | 2048 |
+| `gpu` | the `cpu` set + arniqa, hyperiqa, dbcnn |
+| `all` | every pyiqa no-reference model that scores single photos (about 69), very slow without a GPU |
 
-With no options the script uses `gpu` when it finds a GPU and `cpu` otherwise (force it with `--device cpu`). Ratings always combine every model already in the cache, so you can start with `cpu` and later add the other models with `--preset gpu --max-side 1024`. The `--max-side` keeps the image size the same as the first run; without it the script warns that old and new scores were made at different sizes.
+With no options the script uses `gpu` when it finds a GPU and `cpu` otherwise (force it with `--device cpu`). Ratings always combine every model already in the cache, so you can start with `cpu` and later add the other models with `--preset gpu`. Every preset scores at the same size (`--max-side`, default 1024), so scores from different runs, machines and presets are comparable; if you change `--max-side` the script warns that old and new scores were made at different sizes.
 
 ## Gallery: browse the ranking
 
@@ -221,7 +221,7 @@ Install the CUDA build of PyTorch now? It downloads about 2-3 GB and replaces to
 - **Nothing is installed without your consent.** Without a terminal (a scheduled job, a pipe) it only reports; add `--fix-gpu` to install without being asked, or `--no-fix-gpu` to stop the question. `--device cpu` also skips it, and machines without an NVIDIA GPU (Intel, AMD, none) are never touched.
 - If the installer fails, the run continues on the CPU and prints the command to run yourself.
 
-By hand: `uv pip install --reinstall torch torchvision --torch-backend=auto`, then check `python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"`: you want a CUDA version and `True`. If a CUDA build still says `False`, update the NVIDIA driver (`nvidia-smi` must work and show the GPU). After the fix the `auto` preset picks the 8-model GPU set; add `--max-side 1024` to keep scores comparable with an earlier CPU run. Results already in the cache are kept.
+By hand: `uv pip install --reinstall torch torchvision --torch-backend=auto`, then check `python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"`: you want a CUDA version and `True`. If a CUDA build still says `False`, update the NVIDIA driver (`nvidia-smi` must work and show the GPU). After the fix the `auto` preset picks the 8-model GPU set, at the same image size as on the CPU. Results already in the cache are kept.
 
 **Something did not run (the ATTENTION block).** A run that could not do everything finishes with a framed list of what was skipped and the command that fixes it, so it is not lost among the download progress. Typical entries:
 
@@ -238,6 +238,6 @@ Everything already scored stays in the cache, so after fixing, run the same comm
 ## Notes
 
 - The first run downloads model weights (CLIP about 600 MB, plus each pyiqa model).
-- On a CPU, expect seconds per photo per model. Use `--models` and `--max-side 1024`.
+- On a CPU, expect seconds per photo per model. Use `--models`, and `--max-side 768` to go faster still.
 - Face embeddings are biometric data. They are stored in `iqa_scores.json`, so keep that file private. If the photo folder syncs to Nextcloud, the file syncs too.
 - If Windows blocks torch DLLs ("Application Control policy"), run it in WSL2.

@@ -27,12 +27,18 @@ def test_preset_follows_the_hardware_and_models_override_it(stubbed, tmp_path, m
 
     run("--device", "cpu")
     assert seen["models"] == pl.CPU_MODELS and seen["max_side"] == 1024
-    run("--device", "cpu", "--preset", "gpu", "--max-side", "1024")
-    assert seen["models"] == pl.GPU_MODELS
-    run("--device", "cpu", "--preset", "all", "--max-side", "1024")
+    run("--device", "cpu", "--preset", "gpu")
+    assert seen["models"] == pl.GPU_MODELS and seen["max_side"] == 1024      # the same size as the cpu preset
+    run("--device", "cpu", "--preset", "all")
     assert "fid" not in seen["models"] and "musiq" in seen["models"]      # not a per-photo scorer
-    run("--device", "cpu", "--models", "niqe", "--max-side", "1024")
-    assert seen["models"] == ["niqe"]
+    assert seen["max_side"] == 1024
+    run("--device", "cpu", "--models", "niqe")
+    assert seen["models"] == ["niqe"] and seen["max_side"] == 1024
+    run("--device", "cpu", "--models", "niqe", "--max-side", "768")
+    assert seen["max_side"] == 768                                           # an explicit choice still wins
+    run("--device", "cpu", "--max-side", "768")
+    run("--device", "cpu")                                                    # back to the default: a warning about mixed sizes, not a crash
+    assert seen["max_side"] == 1024
 
 
 def test_norm_score_direction_and_range():
