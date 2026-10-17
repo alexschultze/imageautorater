@@ -18,18 +18,46 @@ Commands, in the order you use them:
 
 ## Install
 
-Needs [uv](https://docs.astral.sh/uv/) (`winget install astral-sh.uv`) and git. Python 3.12 or newer; uv fetches it if needed. Installation and the first model downloads need internet.
+### 1. One-time setup of a fresh Windows 10 (nothing installed yet)
+
+Open a normal **PowerShell** window (not as administrator; the Git installer asks for approval itself) and run:
 
 ```
-uv venv
+winget --version
+winget install -e --id Git.Git
+winget install -e --id astral-sh.uv
+winget install -e --id Microsoft.VCRedist.2015+.x64
+```
+
+Then **close the window and open a new one**, so the new programs are found. You do not need to install Python: uv fetches the right version itself.
+
+- `Git.Git` is needed to install from the repository, `astral-sh.uv` is the installer, and the Visual C++ runtime is required by PyTorch (without it you get "DLL load failed" errors on a fresh Windows).
+- If `winget` is not recognised: update Windows 10 to 22H2, or install **App Installer** from the Microsoft Store, then try again. Windows 10 itself no longer receives regular updates, so keep the machine patched and offline-safe as you see fit.
+- You need about 5 GB of free disk space for the program, plus the model downloads on the first run.
+
+### 2. Install the program
+
+Choose a folder that is **not** synced by a cloud client (the environment holds thousands of files), for example `C:\imageautorater`:
+
+```
+mkdir C:\imageautorater
+cd C:\imageautorater
+uv venv --python 3.12
 uv pip install "imageautorater @ git+https://github.com/alexschultze/imageautorater" --torch-backend=auto
+.venv\Scripts\imageautorater-rate --help
 ```
 
-`--torch-backend=auto` picks the PyTorch build for your hardware (NVIDIA CUDA, Intel XPU, otherwise CPU). The commands are then in the environment: `.venv\Scripts\imageautorater-rate` and `.venv\Scripts\imageautorater-gallery` (or activate it with `.venv\Scripts\activate`).
+If that prints the help text, everything works. A first scan (and the model downloads) then looks like this:
 
-- **Private repository:** git must be signed in to GitHub. With the GitHub CLI: `gh auth login`, then `gh auth setup-git`. Over SSH use `git+ssh://git@github.com/alexschultze/imageautorater.git` instead.
+```
+.venv\Scripts\imageautorater-rate "D:\Photos\2025" --limit 10
+```
+
+`--torch-backend=auto` picks the PyTorch build for your hardware (NVIDIA CUDA, Intel XPU, otherwise CPU). The commands are in the environment: `.venv\Scripts\imageautorater-rate` and so on (or activate it once per window with `.venv\Scripts\activate`, then use the bare command names).
+
+- **No GitHub account or sign-in is needed**: the repository is public.
 - **A specific version:** add a tag, branch or commit after the URL: `...imageautorater@v0.1.0`.
-- **Update:** repeat the same command with `--upgrade`.
+- **Update:** repeat the same `uv pip install` command with `--upgrade`.
 - **Person identification** (optional): `uv pip install --no-deps facenet-pytorch`. It has to be installed without dependencies because it pins an old torch; everything else it needs is already installed.
 - **RAW files** (optional): `uv pip install rawpy`.
 
