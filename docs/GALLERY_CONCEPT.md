@@ -21,7 +21,7 @@ per folder with "Show more", one sort key at a time (overall / stars / one model
 lightbox with per-model scores.
 
 Gaps against the goal: single ranking at a time; folder choice is a flat dropdown (one or all); no multi-select of years;
-thumbs 360 px; everything in one HTML file (a 35,000-photo library means a 10+ MB page); no way to build a ranking of your own.
+everything in one HTML file (a 35,000-photo library means a 10+ MB page); no way to build a ranking of your own.
 
 ## 3. Features
 
@@ -73,7 +73,7 @@ A ranker = a function photo -> number (higher is better). Built in:
 ```
 iqa_results.json (root)  ──►  gallery.py (build)  ──►  <out>/gallery.html        shell + JS + CSS, small, static
                                    │                    <out>/gallery_data/        index.js + one data file per top folder
-                                   └──────────────►    <thumb-dir>/*.jpg          512 px thumbnails
+                                   └──────────────►    <thumb-dir>/*.jpg          360 px thumbnails
 ```
 
 - **Package layout** (all inside the existing package, no new dependency):
