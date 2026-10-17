@@ -17,6 +17,8 @@ dependencies = [
     "transformers>=4.40",
     "requests>=2.31",
     "tqdm>=4.66",
+    # openai-clip (used by pyiqa for the clipiqa and liqe models) imports pkg_resources, which setuptools 82 removed
+    "setuptools<82",
 ]
 
 [project.optional-dependencies]

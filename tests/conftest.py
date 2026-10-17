@@ -91,6 +91,7 @@ def write_results(folder: Path, spec: dict):
 
 @pytest.fixture
 def stubbed(monkeypatch):
+    monkeypatch.setattr(pl, "nvidia_gpus", lambda: [])   # tests never depend on, or try to repair, the real GPU setup
     monkeypatch.setattr(pl, "Faces", FakeFaces)
     monkeypatch.setattr(pl, "Clip", FakeClip)
     monkeypatch.setattr(pl, "available_models", lambda: ["musiq", "topiq_nr", "clipiqa", "liqe", "nima",

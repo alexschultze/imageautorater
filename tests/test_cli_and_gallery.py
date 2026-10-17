@@ -11,7 +11,7 @@ import imageautorater.pipeline as pl
 def test_preset_follows_the_hardware_and_models_override_it(stubbed, tmp_path, monkeypatch, capsys):
     seen = {}
 
-    def fake_run_models(folder, paths, models, device, max_side, cache, cache_path):
+    def fake_run_models(folder, paths, models, device, max_side, cache, cache_path, **kw):
         seen.update(models=list(models), max_side=max_side)
         for m in models:
             cache["scores"][m] = {"a.png": 50.0}

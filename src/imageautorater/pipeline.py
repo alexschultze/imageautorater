@@ -216,6 +216,61 @@ def ensure_imported(module: str, why: str):
     log(f"{module} loaded in {time.time() - t0:.0f}s")
 
 
+PROBLEMS = []   # (what did not run, how to fix it); printed prominently at the end of the run
+
+
+def note_problem(what, fix=None):
+    PROBLEMS.append((what, fix))
+
+
+def report_problems():
+    """Print what did not run and how to fix it, framed so it cannot be missed among the download progress output."""
+    if not PROBLEMS:
+        return
+    print("\n" + "=" * 100)
+    print(f"ATTENTION: {len(PROBLEMS)} thing(s) did not run, so the results are incomplete:")
+    for what, fix in PROBLEMS:
+        print(f"  - {what}" + (f"\n      fix: {fix}" if fix else ""))
+    print("Run the same command again after fixing; everything already done stays in the cache.")
+    print("=" * 100 + "\n")
+
+
+PKG_RESOURCES_FIX = 'uv pip install "setuptools<82"   (setuptools 82+ removed pkg_resources, which the CLIP package needs)'
+
+
+def model_problem_fix(reason):
+    return PKG_RESOURCES_FIX if "pkg_resources" in reason else None
+
+
+def prefetched(items, loader, workers=4):
+    """Yield (item, value, error) in order. While the caller works on one item, a small thread pool already loads the
+    next ones (JPEG decoding releases the GIL, and a network share answers several requests in parallel), so the GPU
+    does not wait for the disk. An item that fails to load yields its error instead of raising."""
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+
+    workers = max(1, int(workers))
+    it = iter(items)
+    pending = deque()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        def fill():
+            while len(pending) < workers * 2:
+                try:
+                    item = next(it)
+                except StopIteration:
+                    return
+                pending.append((item, pool.submit(loader, item)))
+
+        fill()
+        while pending:
+            item, fut = pending.popleft()
+            fill()
+            try:
+                yield item, fut.result(), None
+            except Exception as err:
+                yield item, None, err
+
+
 def fmt_eta(elapsed, n, total):
     if n < 2:
         return "ETA --"
@@ -245,7 +300,7 @@ def config_range(name):
     return parse_range(DEFAULT_CONFIGS.get(name, {}).get("score_range"))
 
 
-def run_models(folder, paths, models, device, max_side, cache, cache_path):
+def run_models(folder, paths, models, device, max_side, cache, cache_path, io_threads=4):
     ensure_imported("pyiqa", "Loading pyiqa (nothing is installed; this can take a while on the first start)")
     import numpy as np
     import pyiqa
@@ -266,6 +321,7 @@ def run_models(folder, paths, models, device, max_side, cache, cache_path):
             metric = pyiqa.create_metric(name, device=dev)
         except Exception as e:
             print(f"[{mi}/{len(models)}] {name}: SKIP (cannot load: {str(e)[:120]})", file=sys.stderr)
+            note_problem(f"model {name} was skipped: {str(e)[:100]}", model_problem_fix(str(e)))
             if not cache["scores"].get(name):
                 cache["scores"].pop(name, None)  # keep any earlier scores for this model
             continue
@@ -275,12 +331,13 @@ def run_models(folder, paths, models, device, max_side, cache, cache_path):
 
         failed = 0
         t0 = time.time()
-        for n, p in enumerate(todo, 1):
+        for n, (p, img, load_err) in enumerate(prefetched(todo, lambda q: load_image(q, max_side), io_threads), 1):
             status(f"[{mi}/{len(models)}] {name}  {n}/{len(todo)}  {fmt_eta(time.time() - t0, n, len(todo))}  {p.name}")
             if n % 25 == 0:
                 save_cache(cache_path, cache)  # keep progress if interrupted
             try:
-                img = load_image(p, max_side)
+                if load_err:
+                    raise load_err
                 t = torch.from_numpy(np.array(img)).permute(2, 0, 1).float().div(255).unsqueeze(0)   # np.array copies: writable
                 with torch.no_grad():
                     s = float(metric(t.to(dev)).item())
@@ -292,6 +349,7 @@ def run_models(folder, paths, models, device, max_side, cache, cache_path):
                     print(f"    {name}: failed on {p.name}: {str(e)[:120]}", file=sys.stderr)
                 if failed >= 3 and not done:  # model is broken for these inputs; give up on it
                     print(f"    {name}: giving up", file=sys.stderr)
+                    note_problem(f"model {name} failed on the first photos and was given up: {str(e)[:100]}")
                     break
         status(None)
         print(f"[{mi}/{len(models)}] {name}: done, {len(done)}/{len(paths)} scored in {time.time() - t0:.0f}s")
@@ -405,8 +463,8 @@ def nvidia_gpus():
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
-GPU_FIX = ("Fix: in the environment you run this from, reinstall PyTorch with the right build:\n"
-           "       uv pip install --reinstall torch torchvision --torch-backend=auto\n"
+GPU_FIX = ("Fix: run again with --fix-gpu (it installs the CUDA build of PyTorch into this environment, about 2-3 GB), or "
+           "yourself:\n       uv pip install --reinstall torch torchvision --torch-backend=auto\n"
            "     (On Windows the default PyTorch from PyPI is CPU-only, and `uv sync` in a source checkout also installs the "
            "CPU build.)")
 
@@ -433,6 +491,106 @@ def hardware_report(torch, dev, gpus):
                "CUDA version (update the driver; `nvidia-smi` shows the newest CUDA it supports), or the GPU is not visible "
                "in this session (remote desktop, a container or WSL without GPU access).")
     return line, why
+
+
+def torch_cuda_build():
+    """(installed, cuda) for the installed PyTorch, read from its files WITHOUT importing it. `cuda` is the CUDA version
+    the build was made for, None for a CPU-only build, "unknown" when it cannot be told. Importing is avoided on purpose:
+    a loaded PyTorch locks its DLLs on Windows, which would make replacing it impossible."""
+    from importlib import metadata
+
+    try:
+        dist = metadata.distribution("torch")
+        text = Path(dist.locate_file("torch/version.py")).read_text(encoding="utf-8")
+    except metadata.PackageNotFoundError:
+        return False, None
+    except OSError:
+        return True, "unknown"
+    m = re.search(r"^cuda\b[^=\n]*=\s*(?:None|'([\d.]+)'|\"([\d.]+)\")", text, re.MULTILINE)
+    if not m:
+        return True, "unknown"
+    return True, (m.group(1) or m.group(2))
+
+
+CUDA_INDEXES = ["cu132", "cu130", "cu129", "cu128", "cu126", "cu124", "cu121", "cu118"]   # pytorch.org/whl/<name>
+
+
+def driver_cuda_version():
+    """The newest CUDA version the installed NVIDIA driver supports, as reported by nvidia-smi (e.g. '13.3'), or None."""
+    import shutil
+    import subprocess
+
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return None
+    try:
+        out = subprocess.run([exe], capture_output=True, text=True, timeout=20).stdout
+    except Exception:
+        return None
+    m = re.search(r"CUDA (?:UMD )?Version:\s*([\d.]+)", out)
+    return m.group(1) if m else None
+
+
+def choose_cuda_index(driver_cuda):
+    """The newest PyTorch CUDA build the driver can run, e.g. '13.3' -> 'cu132'; cu126 when the driver is unknown."""
+    try:
+        have = tuple(int(x) for x in driver_cuda.split(".")[:2])
+    except (AttributeError, ValueError):
+        return "cu126"
+    for name in CUDA_INDEXES:
+        if (int(name[2:-1]), int(name[-1])) <= have:
+            return name
+    return CUDA_INDEXES[-1]
+
+
+def gpu_fix_command(python, uv, driver_cuda):
+    """The command that installs the CUDA build of PyTorch into the environment of `python`."""
+    if uv:
+        return [uv, "pip", "install", "--python", python, "--reinstall", "torch", "torchvision", "--torch-backend=auto"]
+    return [python, "-m", "pip", "install", "--upgrade", "--force-reinstall", "torch", "torchvision",
+            "--index-url", f"https://download.pytorch.org/whl/{choose_cuda_index(driver_cuda)}"]
+
+
+def maybe_fix_gpu(choice, device_arg):
+    """An NVIDIA GPU together with a CPU-only PyTorch is the usual reason a GPU is not used. Offer to install the CUDA
+    build. choice: True = do it without asking (--fix-gpu), False = never offer (--no-fix-gpu), None = ask when running in a
+    terminal, otherwise only report. Runs BEFORE PyTorch is imported. Returns True when PyTorch was replaced."""
+    import shutil
+    import subprocess
+
+    if choice is False or (device_arg and choice is not True):   # --device cpu etc.: the user chose
+        return False
+    gpus = nvidia_gpus()
+    installed, cuda = torch_cuda_build()
+    if not gpus or not installed or cuda is not None:    # no NVIDIA GPU / no PyTorch yet / already a CUDA build (or unknown)
+        if choice is True and not gpus:
+            log("--fix-gpu: no NVIDIA GPU was found, nothing to do")
+        return False
+    driver = driver_cuda_version()
+    cmd = gpu_fix_command(sys.executable, shutil.which("uv"), driver)
+    log(f"An NVIDIA GPU is present ({gpus[0]}) but the installed PyTorch is a CPU-only build, so the GPU would NOT be used.")
+    log("Fix: " + " ".join(cmd))
+    if choice is None:
+        if not sys.stdin or not sys.stdin.isatty():
+            print("Not interactive: not installing. Run again with --fix-gpu to install it, or --no-fix-gpu to stop this message.")
+            return False
+        if input("Install the CUDA build of PyTorch now? It downloads about 2-3 GB and replaces torch and torchvision "
+                 "in this environment. [Y/n] ").strip().lower() not in ("", "y", "yes"):
+            print("Not installing; this run uses the CPU.")
+            return False
+    log("Installing the CUDA build of PyTorch (this takes a few minutes) ...")
+    try:
+        done = subprocess.run(cmd)
+    except OSError as err:
+        log(f"Could not start the installer: {err}")
+        return False
+    if done.returncode != 0:
+        log(f"The installer failed (exit code {done.returncode}); continuing on the CPU. Run the command above yourself to see why.")
+        return False
+    check = subprocess.run([sys.executable, "-c", "import torch; print(torch.cuda.is_available(), torch.version.cuda)"],
+                           capture_output=True, text=True)
+    log(f"PyTorch replaced. Check: cuda available / build = {check.stdout.strip() or check.stderr.strip()[-120:]}")
+    return True
 
 
 _hardware_reported = False
@@ -471,7 +629,7 @@ def pick_device(arg):
 # Model presets. musiq/topiq_nr/clipiqa/liqe/nima: a diverse, reasonably light set that works on a CPU. The GPU set adds
 # heavier models. "all" is every pyiqa no-reference model except those that are not per-photo quality scorers.
 CPU_MODELS = ["musiq", "topiq_nr", "clipiqa", "liqe", "nima"]
-GPU_MODELS = CPU_MODELS + ["arniqa", "hyperiqa", "maniqa", "dbcnn"]
+GPU_MODELS = CPU_MODELS + ["arniqa", "hyperiqa", "dbcnn"]   # maniqa is left out on purpose: ~4.5 s per photo on an RTX 2060
 NOT_PER_IMAGE = {"fid", "fid_dinov2", "sfid", "inception_score", "clipscore"}  # compare image sets / need text
 PRESET_MAX_SIDE = {"cpu": 1024, "gpu": 2048, "all": 2048}
 
@@ -947,7 +1105,8 @@ def run_content(folder, paths, rel, cache, cache_path, a, faces_dir):
                 state["clip"] = Clip(a.clip_model, dev)
                 log("CLIP model ready")
             except Exception as e:
-                print(f"WARNING: CLIP unavailable, skipping keywords ({str(e)[:150]}). pip install transformers", file=sys.stderr)
+                print(f"WARNING: CLIP unavailable, skipping keywords ({str(e)[:150]}). uv pip install transformers", file=sys.stderr)
+                note_problem(f"image-type keywords were skipped (CLIP model unavailable: {str(e)[:100]})", "uv pip install transformers")
                 state["clip_ok"] = False
         return state["clip"]
 
@@ -959,7 +1118,9 @@ def run_content(folder, paths, rel, cache, cache_path, a, faces_dir):
                 log("Face models ready")
             except Exception as e:
                 print(f"WARNING: face model unavailable, skipping people ({str(e)[:150]}). "
-                      "pip install facenet-pytorch --no-deps", file=sys.stderr)
+                      "Install it with: uv pip install --no-deps facenet-pytorch", file=sys.stderr)
+                note_problem(f"faces were NOT detected: the face model is unavailable ({str(e)[:100]})",
+                             "uv pip install --no-deps facenet-pytorch   (no-deps: it pins an old torch)")
                 state["faces_ok"] = False
         return state["faces"]
 
@@ -971,12 +1132,13 @@ def run_content(folder, paths, rel, cache, cache_path, a, faces_dir):
     todo = [p for p in paths
             if (state["clip_ok"] and rel[p] not in cache["clip"]) or (state["faces_ok"] and rel[p] not in cache["faces"])]
     t0, last_save = time.time(), time.time()
-    for n, p in enumerate(todo, 1):
+    for n, (p, img, load_err) in enumerate(prefetched(todo, lambda q: load_image(q, a.content_max_side), a.io_threads), 1):
         status(f"[content] {n}/{len(todo)}  {fmt_eta(time.time() - t0, n, len(todo))}  {p.name}")
         try:
+            if load_err:
+                raise load_err
             need_clip = state["clip_ok"] and rel[p] not in cache["clip"]
             need_faces = state["faces_ok"] and rel[p] not in cache["faces"]
-            img = load_image(p, a.content_max_side)
             if need_clip and get_clip():
                 cache["clip"][rel[p]] = [round(x, 3) for x in state["clip"].image(img)]
             if need_faces and get_faces():
@@ -1076,6 +1238,12 @@ def main():
     ap.add_argument("--limit", type=int, metavar="N", help="only process the first N images (sorted by path), e.g. for a quick test")
     ap.add_argument("--raw", action="store_true", help="also rate RAW files (needs rawpy)")
     ap.add_argument("--device", help="cuda / cpu (default: auto)")
+    ap.add_argument("--io-threads", type=int, default=4, metavar="N",
+                    help="photos decoded in parallel in the background while a model works (default 4; the GPU no longer "
+                         "waits for the disk, which helps most on a network share)")
+    ap.add_argument("--fix-gpu", action=argparse.BooleanOptionalAction, default=None,
+                    help="with an NVIDIA GPU but a CPU-only PyTorch: install the CUDA build into this environment before "
+                         "running. Default: ask when run in a terminal; --no-fix-gpu never offers it")
     ap.add_argument("--max-side", type=int, default=None,
                     help="downscale long side before scoring; 0 = full size (default: 1024 for the cpu preset, 2048 otherwise)")
     ap.add_argument("--json-out", type=Path, help=f"combined results JSON (default: <folder>/{RESULTS_NAME})")
@@ -1119,8 +1287,14 @@ def main():
 
     global _T0
     _T0 = time.time()   # the [mm:ss] stamps count from here
-    log(f"imageautorater {__version__}: this command installs nothing. Normal reasons to wait: reading a big folder, "
-        "loading PyTorch, and (first run only) downloading model weights, which are cached in your user profile afterwards.")
+    PROBLEMS.clear()
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")   # Windows without developer mode: harmless, very noisy
+    import warnings
+    warnings.filterwarnings("ignore", message=".*torch.jit.load.*")
+    log(f"imageautorater {__version__}: nothing is installed unless you agree to the GPU fix. Normal reasons to wait: reading "
+        "a big folder, loading PyTorch, and (first run only) downloading model weights, which are cached in your user profile.")
+    if a.iqa or a.classify or a.faces is not False:
+        maybe_fix_gpu(a.fix_gpu, a.device)   # before anything imports PyTorch
     if not a.folder.is_dir():
         sys.exit(f"Not a folder: {a.folder}")
     faces_dir, faces_how, faces_others = resolve_faces_dir(a.folder, a.faces_dir)   # one ground truth for all scans
@@ -1206,7 +1380,7 @@ def main():
         cache["max_side"] = a.max_side
         log(f"Scoring quality: {len(models)} models ({', '.join(models)}) on {len(paths)} photos. "
             "Progress and time left are shown per model; you can stop with Ctrl+C and continue later.")
-        run_models(a.folder, paths, models, a.device, a.max_side, cache, cache_path)
+        run_models(a.folder, paths, models, a.device, a.max_side, cache, cache_path, io_threads=a.io_threads)
         save_cache(cache_path, cache)
 
     # content analysis: keywords + people
@@ -1219,6 +1393,7 @@ def main():
     # so a partial run never shrinks the ratings built up earlier.
     used = [m for m in cache["scores"] if cache["scores"][m] and m in cache["models"] and m not in set(a.exclude)]
     if not used and not content:
+        report_problems()   # the reasons come first: they explain why nothing was scored
         sys.exit("Nothing was scored.")
     unknown = [m for m in used if cache["models"][m].get("range") is None]
     if unknown:   # ranges stored by an earlier version could not be read: refill them from pyiqa's model table
@@ -1245,6 +1420,7 @@ def main():
     took = int(time.time() - _T0)
     log(f"Done in {took // 3600}h{took % 3600 // 60:02d}m{took % 60:02d}s: {len(set(per_image) | set(content))} images, {len(used)} models"
         + (f", {named} faces named" if content else "") + ".")
+    report_problems()
     print("Nothing was written into or next to your photos. Next steps:")
     print(f'  imageautorater-write-xmp  "{a.folder}"    (XMP sidecar files)')
     print(f'  imageautorater-write-exif "{a.folder}"    (inside JPEG/PNG files; asks first, --backup DIR available)')

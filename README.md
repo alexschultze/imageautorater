@@ -58,7 +58,8 @@ If that prints the help text, everything works. A first scan (and the model down
 - **No GitHub account or sign-in is needed**: the repository is public.
 - **A specific version:** add a tag, branch or commit after the URL: `...imageautorater@v0.1.0`.
 - **Update:** repeat the same `uv pip install` command with `--upgrade`.
-- **Person identification** (optional): `uv pip install --no-deps facenet-pytorch`. It has to be installed without dependencies because it pins an old torch; everything else it needs is already installed.
+- **GPU:** an NVIDIA GPU is used automatically; if PyTorch was installed as a CPU-only build, the first run offers to replace it (see *Troubleshooting*).
+- **Person identification (required for faces)**: `uv pip install --no-deps facenet-pytorch`. Without it **no faces are detected**: the run continues without them and says so in the ATTENTION block at the end. It has to be installed without dependencies because it pins an old torch; everything else it needs is already installed.
 - **RAW files** (optional): `uv pip install rawpy`.
 
 ### Development
@@ -178,7 +179,7 @@ _faces\
 | Preset | Models | `--max-side` |
 |---|---|---|
 | `cpu` | musiq, topiq_nr, clipiqa, liqe, nima | 1024 |
-| `gpu` | the `cpu` set + arniqa, hyperiqa, maniqa, dbcnn | 2048 |
+| `gpu` | the `cpu` set + arniqa, hyperiqa, dbcnn | 2048 |
 | `all` | every pyiqa no-reference model that scores single photos (about 69), very slow without a GPU | 2048 |
 
 With no options the script uses `gpu` when it finds a GPU and `cpu` otherwise (force it with `--device cpu`). Ratings always combine every model already in the cache, so you can start with `cpu` and later add the other models with `--preset gpu --max-side 1024`. The `--max-side` keeps the image size the same as the first run; without it the script warns that old and new scores were made at different sizes.
@@ -207,13 +208,28 @@ Everything is cached, including scores, CLIP embeddings and face embeddings. An 
 
 ## Troubleshooting
 
-**The GPU is not used ("device: cpu" on a machine with an NVIDIA card).** The log line after loading PyTorch says which build you have, for example `PyTorch 2.5.0+cpu (CPU-only build); device: cpu`, and when an NVIDIA GPU is present but not used the program prints a warning saying why. The usual cause is a CPU-only PyTorch: on Windows the default PyTorch from PyPI has no CUDA, and `uv sync` in a source checkout installs the CPU build on purpose. Reinstall the right build in the environment you run from:
+**The GPU is not used ("device: cpu" on a machine with an NVIDIA card).** On Windows the default PyTorch from PyPI is a CPU-only build, so a plain install ends up on the CPU even with an NVIDIA GPU (`uv sync` in a source checkout installs the CPU build on purpose, too). `imageautorater-rate` checks this itself at the start of every run, before PyTorch is loaded: if `nvidia-smi` shows an NVIDIA GPU but the installed PyTorch is CPU-only, it says so and offers the fix:
 
 ```
-uv pip install --reinstall torch torchvision --torch-backend=auto
+An NVIDIA GPU is present (NVIDIA GeForce RTX 2060, 610.74) but the installed PyTorch is a CPU-only build, so the GPU would NOT be used.
+Install the CUDA build of PyTorch now? It downloads about 2-3 GB and replaces torch and torchvision in this environment. [Y/n]
 ```
 
-Check it with `python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"`: you want a CUDA version and `True`. If it prints `True` for a CUDA build but the program still says CPU, or `False` with a CUDA build, update the NVIDIA driver (`nvidia-smi` must work and show a GPU). The `auto` preset chooses the 9-model GPU set only when a GPU is really in use, so a CPU-only PyTorch also shows up as the 5-model preset. Results already in the cache are kept; only the remaining photos are scored on the GPU after you restart.
+- **Yes** installs it with `uv pip install --reinstall torch torchvision --torch-backend=auto` into the environment you run from (or, without uv, with `pip` and the PyTorch index that matches your driver's CUDA version), checks it in a fresh process, and carries on with the GPU. It only ever runs before PyTorch is loaded, because a loaded PyTorch locks its files on Windows.
+- **Nothing is installed without your consent.** Without a terminal (a scheduled job, a pipe) it only reports; add `--fix-gpu` to install without being asked, or `--no-fix-gpu` to stop the question. `--device cpu` also skips it, and machines without an NVIDIA GPU (Intel, AMD, none) are never touched.
+- If the installer fails, the run continues on the CPU and prints the command to run yourself.
+
+By hand: `uv pip install --reinstall torch torchvision --torch-backend=auto`, then check `python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"`: you want a CUDA version and `True`. If a CUDA build still says `False`, update the NVIDIA driver (`nvidia-smi` must work and show the GPU). After the fix the `auto` preset picks the 8-model GPU set; add `--max-side 1024` to keep scores comparable with an earlier CPU run. Results already in the cache are kept.
+
+**Something did not run (the ATTENTION block).** A run that could not do everything finishes with a framed list of what was skipped and the command that fixes it, so it is not lost among the download progress. Typical entries:
+
+- `model clipiqa / liqe was skipped ... No module named 'pkg_resources'`: the CLIP package behind these two models needs `pkg_resources`, which `setuptools` 82 and newer removed. This package now pins `setuptools<82`; on an older install run `uv pip install "setuptools<82"`.
+- `faces were NOT detected ... facenet_pytorch`: install it with `uv pip install --no-deps facenet-pytorch` (see Install).
+- A model that fails on its first photos is given up and listed.
+
+Everything already scored stays in the cache, so after fixing, run the same command again and only the missing parts are done. In the log, a model reported as `cached` was scored by an earlier run and is not computed again.
+
+**It is slow.** Every model reads and decodes every photo, and decoding a large JPEG (about 24 megapixels) takes roughly half a second of CPU, which is often more than the model itself on a GPU. The next photos are decoded in the background while a model works (`--io-threads N`, default 4; more helps on a PC with many cores and on a network share). Fewer models help most. `maniqa` is deliberately not in any preset: on a 6 GB GPU it took about 4.5 s per photo, more than all the other models together (add it yourself with `--models` if you want it). Start with `--limit 50` to measure, then multiply.
 
 **A big folder on a network share (NAS) is slow to start.** The folder is read with directory listings, which is fast even for tens of thousands of photos (35,000 photos in about 10 seconds on a NAS). The progress lines `[mm:ss]` show every phase.
 

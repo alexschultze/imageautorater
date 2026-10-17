@@ -23,7 +23,7 @@ def test_a_run_explains_itself_from_the_first_second(stubbed, tmp_path, monkeypa
         make_photo(p, n, "A")
     out = run(monkeypatch, str(p), "--faces-only", "--faces-dir", str(tmp_path / "_faces"))
     lines = out.splitlines()
-    assert re.match(r"\[00:0\d\] imageautorater .*this command installs nothing", lines[0])   # first line, immediately
+    assert re.match(r"\[00:0\d\] imageautorater .*nothing is installed unless you agree", lines[0])   # first line, immediately
     for expected in ("Reading ", "Found 3 photos in ", "Checking 3 photos against the cache",
                      "Cache check done: 3 new to this cache, 0 modified, 0 unchanged", "Faces folder: ", "Analysing faces",
                      "Face models ready", "Combining the ratings", "Wrote combined results", "Done in 0h00m"):
