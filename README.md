@@ -119,7 +119,7 @@ Written in the photo folder, never next to the individual photos:
 
 - **`iqa_results.json`**: per image the stars and raw score of every model, the mean stars, the keywords (recognised people first, then image types) and the people found. This is what the other commands read.
 - **`iqa_scores.json`**: the persistent cache (scores, CLIP and face embeddings).
-- **`_faces\`**: crops to name people, by default in a `_faces` folder next to the photo folder (see *Naming people*).
+- **`_faces\`**: crops to name people, by default in a `_faces` folder in the root of the photo folder (see *Naming people*).
 
 ## Saving the results into your photos
 
@@ -143,11 +143,12 @@ There is **one ground truth for faces**: a single `_faces\` folder, shared by ev
 
 1. **`--faces-dir <folder>`**: a custom folder you name.
 2. **`IMAGEAUTORATER_FACES`**: a custom folder for all scans, set as an environment variable.
-3. **Next to the photo folder (the primary choice)**: a `_faces` folder beside the folder you scan. Scanning `D:\Photos\2025` uses `D:\Photos\_faces`, so `2024`, `2025`, ... all share it. If nothing exists yet, it is created there.
-4. **`_faces\` in the repository**, when you run from a source checkout (git-ignored).
-5. **The per-user data folder**: `%LOCALAPPDATA%\imageautorater\_faces` on Windows, `~/.local/share/imageautorater/_faces` elsewhere. Also used when the folder next to the photos cannot be written.
+3. **`_faces` inside the folder you scan (the primary choice)**: in its root, next to its year or album folders. Scanning `D:\Photos` uses `D:\Photos\_faces`. If nothing exists yet, it is created there.
+4. **`_faces` next to the scanned folder, then further up** (up to 4 levels): scanning `D:\Photos\2025` finds `D:\Photos\_faces`, so one `_faces` serves `2024`, `2025`, ... and everything below them. The nearest one wins.
+5. **`_faces` in the repository**, when you run from a source checkout (git-ignored).
+6. **The per-user data folder**: `%LOCALAPPDATA%\imageautorater\_faces` on Windows, `~/.local/share/imageautorater/_faces` elsewhere. Also used when the scanned folder cannot be written to.
 
-For 3 to 5 the first folder that already exists is used, and any other faces folder that exists is reported as *not used*, so a split ground truth never goes unnoticed. To move to the primary location, move your existing `_faces\` folder next to your photo folder. The folder being scanned, or anything inside it, is never used as the default, and a custom faces folder inside the photo folder is excluded from the scan (its crops are not rated as photos). Hidden folders such as the gallery's `.iqa_thumbs` are never scanned either.
+For 3 to 6 the first folder that already exists is used, and any other `_faces` folder that exists is reported as *not used*, so a split ground truth never goes unnoticed. The scan prints `Faces folder: ... (how it was found)`, and the first-run question names the folder it looked in. Photos are never searched in a `_faces` folder (at any depth) or in a hidden folder such as the gallery's `.iqa_thumbs`, so the crops are never rated as photos. A custom faces folder inside the photo folder is excluded too.
 
 ```
 _faces\

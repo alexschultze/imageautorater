@@ -13,8 +13,8 @@ This command does NOT write any metadata into or next to your photos. Do that as
 Content analysis (on by default; needs `transformers`, and `facenet-pytorch` for faces):
   * Image type keywords via CLIP zero-shot classification (portrait, landscape, food, ...).
     Edit the vocabulary with --labels labels.txt (one label per line, optional "label: prompt").
-  * Person identification with ONE ground truth: a single _faces/ folder (see resolve_faces_dir: by default next to
-    the photo folder you scan, or a custom folder via --faces-dir), shared by every
+  * Person identification with ONE ground truth: a single _faces/ folder (see resolve_faces_dir: by default in the
+    root of the photo folder you scan, else next to it or above it, or a custom folder via --faces-dir), shared by every
     photo folder you process. _faces/<Name>/ holds confirmed faces of that person (crops you moved there and/or
     reference photos you dropped in). Unrecognised faces are grouped into _faces/person_NNNN/ for you to
     name by renaming the folder or moving crops. Names then carry over to every photo folder.
@@ -44,20 +44,24 @@ RAW_EXT = {".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef
 CACHE_NAME = "iqa_scores.json"
 RESULTS_NAME = "iqa_results.json"
 
-def find_images(folder: Path, recursive: bool, include_raw: bool, exclude=()):
-    """Photos in a folder. Never returned: anything inside a hidden (dot) folder such as the gallery's .iqa_thumbs,
-    and anything inside one of the `exclude` folders (e.g. a faces folder that sits inside the photo folder)."""
+def find_images(folder: Path, recursive: bool, include_raw: bool, exclude=(), progress=None):
+    """Photos in a folder. Never returned: anything inside a hidden (dot) folder such as the gallery's .iqa_thumbs, or in any _faces folder,
+    and anything inside one of the `exclude` folders (e.g. a faces folder that sits inside the photo folder).
+    progress(n_entries_looked_at, n_photos_found) is called every 500 entries so a big folder shows life signs."""
     exts = IMG_EXT | (RAW_EXT if include_raw else set())
     base = folder.resolve()
     skip = [Path(e).resolve() for e in exclude]
     it = folder.rglob("*") if recursive else folder.glob("*")
-    out = []
+    out, seen = [], 0
     for p in it:
+        seen += 1
+        if progress and seen % 500 == 0:
+            progress(seen, len(out))
         if not p.is_file() or p.suffix.lower() not in exts:
             continue
         rel_parent = p.relative_to(folder).parts[:-1]
-        if any(part.startswith(".") for part in rel_parent):
-            continue
+        if any(part.startswith(".") or part == "_faces" for part in rel_parent):
+            continue   # hidden folders (.iqa_thumbs, ...) and any _faces folder hold no photos
         parents = (base.joinpath(*rel_parent),) + tuple(base.joinpath(*rel_parent).parents)
         if any(s in parents for s in skip):
             continue
@@ -83,6 +87,7 @@ def load_image(path: Path, max_side: int):
 
 
 def available_models():
+    ensure_imported("pyiqa", "Loading pyiqa and PyTorch (nothing is installed; the first start can take a minute or more)")
     import pyiqa
 
     try:
@@ -161,6 +166,29 @@ def status(msg):
     sys.stdout.flush()
 
 
+_T0 = time.time()
+
+
+def log(msg):
+    """A progress line stamped with the time since the program started: [mm:ss] message."""
+    status(None)
+    t = int(time.time() - _T0)
+    print(f"[{t // 60:02d}:{t % 60:02d}] {msg}", flush=True)
+
+
+def ensure_imported(module: str, why: str):
+    """Import a heavy module, saying so first: importing PyTorch can take a minute or more (first start after
+    installing, antivirus scanning, slow disk) and prints nothing by itself."""
+    if module in sys.modules:
+        return
+    import importlib
+
+    t0 = time.time()
+    log(f"{why} ...")
+    importlib.import_module(module)
+    log(f"{module} loaded in {time.time() - t0:.0f}s")
+
+
 def fmt_eta(elapsed, n, total):
     if n < 2:
         return "ETA --"
@@ -168,7 +196,30 @@ def fmt_eta(elapsed, n, total):
     return f"{elapsed / (n - 1):.1f}s/img  ETA {int(rem // 60)}m{int(rem % 60):02d}s"
 
 
+def parse_range(value):
+    """A model's score range as [low, high], or None when unknown. pyiqa publishes it as text such as '~0, ~100' or
+    '1, 5' (older versions as a tuple); without it the absolute star mapping would silently fall back to ranking."""
+    if value is None:
+        return None
+    try:
+        nums = re.findall(r"-?\d+(?:\.\d+)?", value) if isinstance(value, str) else list(value)
+        lo, hi = float(nums[0]), float(nums[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    return [lo, hi] if hi > lo else None
+
+
+def config_range(name):
+    """The score range pyiqa lists for a model, read from its built-in table (no weights are loaded)."""
+    try:
+        from pyiqa.default_model_configs import DEFAULT_CONFIGS
+    except Exception:
+        return None
+    return parse_range(DEFAULT_CONFIGS.get(name, {}).get("score_range"))
+
+
 def run_models(folder, paths, models, device, max_side, cache, cache_path):
+    ensure_imported("pyiqa", "Loading pyiqa (nothing is installed; this can take a while on the first start)")
     import numpy as np
     import pyiqa
     import torch
@@ -183,6 +234,7 @@ def run_models(folder, paths, models, device, max_side, cache, cache_path):
         if not todo and name in cache["models"]:
             print(f"[{mi}/{len(models)}] {name}: cached")
             continue
+        log(f"[{mi}/{len(models)}] {name}: loading the model (the first use downloads its weights, cached afterwards)")
         try:
             metric = pyiqa.create_metric(name, device=dev)
         except Exception as e:
@@ -190,11 +242,7 @@ def run_models(folder, paths, models, device, max_side, cache, cache_path):
             if not cache["scores"].get(name):
                 cache["scores"].pop(name, None)  # keep any earlier scores for this model
             continue
-        rng = getattr(metric, "score_range", None)
-        try:
-            rng = [float(rng[0]), float(rng[1])] if rng is not None else None
-        except (TypeError, ValueError, IndexError):
-            rng = None  # e.g. 'unknown' or non-numeric
+        rng = parse_range(getattr(metric, "score_range", None))
         cache["models"][name] = {"lower_better": bool(getattr(metric, "lower_better", False)), "range": rng}
         print(f"[{mi}/{len(models)}] {name}: {len(todo)} images  range={rng}  lower_better={cache['models'][name]['lower_better']}")
 
@@ -206,7 +254,7 @@ def run_models(folder, paths, models, device, max_side, cache, cache_path):
                 save_cache(cache_path, cache)  # keep progress if interrupted
             try:
                 img = load_image(p, max_side)
-                t = torch.from_numpy(np.asarray(img)).permute(2, 0, 1).float().div(255).unsqueeze(0)
+                t = torch.from_numpy(np.array(img)).permute(2, 0, 1).float().div(255).unsqueeze(0)   # np.array copies: writable
                 with torch.no_grad():
                     s = float(metric(t.to(dev)).item())
                 if s == s and abs(s) != float("inf"):
@@ -315,6 +363,7 @@ def load_labels(path):
 
 def pick_device(arg):
     """--device if given, otherwise the best available accelerator: CUDA (NVIDIA/ROCm), Intel XPU, Apple MPS, CPU."""
+    ensure_imported("torch", "Loading PyTorch (nothing is installed; the first start can take a minute or more)")
     import torch
 
     if arg:
@@ -447,12 +496,14 @@ def resolve_faces_dir(photo_folder: Path, explicit: "Path | None" = None):
     Order of preference:
       1. --faces-dir                         a custom folder you name
       2. $IMAGEAUTORATER_FACES               a custom folder for all scans
-      3. <parent of the photo folder>/_faces NEXT TO the folder you scan (the primary choice): scanning
-                                             D:\\Photos\\2025 uses D:\\Photos\\_faces, shared by 2024, 2025, ...
-      4. <repository>/_faces                 when running from a source checkout (git-ignored)
-      5. the per-user data folder
-    From 3 on, the first folder that already exists is used. If none exists yet, it is created next to the photo
-    folder (3), or in the per-user data folder (5) when that location is not writable."""
+      3. <photo folder>/_faces               INSIDE the root of the folder you scan (the primary choice), next to its
+                                             year/album folders: scanning D:\\Photos uses D:\\Photos\\_faces
+      4. <parent>/_faces, then further up    next to the folder you scan, and above it (up to 4 levels), so one _faces
+                                             can serve D:\\Photos\\2024, D:\\Photos\\2025, ... from D:\\Photos\\_faces
+      5. <repository>/_faces                 when running from a source checkout (git-ignored)
+      6. the per-user data folder
+    From 3 on, the first folder that already exists is used (nearest first). If none exists yet, it is created inside
+    the photo folder (3), or in the per-user data folder (6) when that location is not writable."""
     if explicit:
         return explicit, "--faces-dir", []
     env = os.environ.get("IMAGEAUTORATER_FACES")
@@ -460,19 +511,20 @@ def resolve_faces_dir(photo_folder: Path, explicit: "Path | None" = None):
         return Path(env).expanduser(), "$IMAGEAUTORATER_FACES", []
     folder = photo_folder.resolve()
     candidates = []
-    sibling = folder.parent / "_faces"
-    if sibling != folder and folder not in sibling.parents:   # never the folder being scanned, nor inside it
-        candidates.append((sibling, "next to the photo folder"))
+    if folder.name != "_faces":   # scanning a _faces folder itself makes no sense as a default
+        candidates.append((folder / "_faces", "inside the photo folder"))
+    ups = [u for u in folder.parents if u != u.parent][:4]    # not the drive / share root
+    for i, up in enumerate(ups):
+        candidates.append((up / "_faces", "next to the photo folder" if i == 0 else "in a parent folder"))
     repo = Path(__file__).resolve().parents[2]
     if (repo / "pyproject.toml").is_file() and (repo / "src" / "imageautorater").is_dir():
         candidates.append((repo / "_faces", "in the source checkout"))
     candidates.append((user_data_faces_dir(), "per-user data folder"))
-    existing = [c for c in candidates if c[0].is_dir()]
+    existing = [c for c in candidates if c[0].is_dir() and c[0] != folder]   # never the folder being scanned itself
     if existing:
         return existing[0][0], existing[0][1], existing[1:]
-    first = candidates[0]
-    if first[1] == "next to the photo folder" and os.access(first[0].parent, os.W_OK):
-        return first[0], first[1] + " (new)", []
+    if folder.name != "_faces" and os.access(folder, os.W_OK):
+        return folder / "_faces", "inside the photo folder (new)", []
     return candidates[-1][0], candidates[-1][1] + " (new)", []
 
 
@@ -800,7 +852,9 @@ def run_content(folder, paths, rel, cache, cache_path, a, faces_dir):
     def get_clip():
         if state["clip"] is None and state["clip_ok"]:
             try:
+                log(f"Loading the CLIP model {a.clip_model} for keywords (the first use downloads it, about 600 MB) ...")
                 state["clip"] = Clip(a.clip_model, dev)
+                log("CLIP model ready")
             except Exception as e:
                 print(f"WARNING: CLIP unavailable, skipping keywords ({str(e)[:150]}). pip install transformers", file=sys.stderr)
                 state["clip_ok"] = False
@@ -809,7 +863,9 @@ def run_content(folder, paths, rel, cache, cache_path, a, faces_dir):
     def get_faces():
         if state["faces"] is None and state["faces_ok"]:
             try:
+                log("Loading the face detection and recognition models (the first use downloads their weights) ...")
                 state["faces"] = Faces(dev)
+                log("Face models ready")
             except Exception as e:
                 print(f"WARNING: face model unavailable, skipping people ({str(e)[:150]}). "
                       "pip install facenet-pytorch --no-deps", file=sys.stderr)
@@ -893,9 +949,9 @@ def first_run_without_persons(cache, faces_dir):
     return not named_persons_exist(faces_dir)
 
 
-def ask_faces_first():
+def ask_faces_first(faces_dir):
     """Returns True for faces-only (the default), False to proceed without face recognition."""
-    print("\nNo persons are known yet (nothing confirmed in the _faces folder).")
+    print(f"\nNo persons are known yet (nothing confirmed in {faces_dir}).")
     print("  [F] Run --faces-only first: detect and group the faces, then you name them (default)")
     print("  [P] Proceed without face recognition (quality scores and keywords only)")
     if not sys.stdin or not sys.stdin.isatty():
@@ -946,9 +1002,9 @@ def main():
                     help="face detection + person identification. Unset: on, but the first run with no known persons "
                          "asks whether to do --faces-only or proceed without faces")
     ap.add_argument("--faces-dir", type=Path,
-                    help="a custom ground-truth folder for faces. Default: a '_faces' folder NEXT TO the photo folder "
-                         "(D:\\Photos\\2025 -> D:\\Photos\\_faces), then $IMAGEAUTORATER_FACES, a source checkout's _faces/, "
-                         "the per-user data folder; the first that exists wins (see README)")
+                    help="a custom ground-truth folder for faces. Default: a '_faces' folder in the ROOT of the photo folder "
+                         "(D:\\Photos -> D:\\Photos\\_faces), else next to it or further up, then $IMAGEAUTORATER_FACES, a "
+                         "source checkout's _faces/, the per-user data folder; the first that exists wins (see README)")
     ap.add_argument("--face-threshold", type=float, default=0.55, help="min cosine similarity to accept a match; raise if you get wrong names")
     ap.add_argument("--face-margin", type=float, default=0.05,
                     help="a face is only named if the best person beats the runner-up by this much (avoids look-alike mix-ups)")
@@ -968,15 +1024,30 @@ def main():
         a.iqa = a.classify = False
         a.faces = True
 
+    from imageautorater import __version__
+
+    global _T0
+    _T0 = time.time()   # the [mm:ss] stamps count from here
+    log(f"imageautorater {__version__}: this command installs nothing. Normal reasons to wait: reading a big folder, "
+        "loading PyTorch, and (first run only) downloading model weights, which are cached in your user profile afterwards.")
     if not a.folder.is_dir():
         sys.exit(f"Not a folder: {a.folder}")
     faces_dir, faces_how, faces_others = resolve_faces_dir(a.folder, a.faces_dir)   # one ground truth for all scans
-    paths = find_images(a.folder, a.recursive, a.raw, exclude=[faces_dir])
+
+    def walking(seen, found):
+        if sys.stdout.isatty() or seen % 5000 == 0:   # a redirected log gets a line every 5000 entries, not 10x as many
+            status(f"[reading] {seen} entries looked at, {found} photos found so far ...")
+
+    log(f"Reading {a.folder}" + (" (including subfolders)" if a.recursive else "") + " to list the photos ...")
+    t_scan = time.time()
+    paths = find_images(a.folder, a.recursive, a.raw, exclude=[faces_dir], progress=walking)
+    status(None)
     if not paths:
         sys.exit("No images found.")
+    log(f"Found {len(paths)} photos in {time.time() - t_scan:.0f}s")
     if a.limit:
         paths = paths[:a.limit]
-        print(f"--limit: using the first {len(paths)} images (sorted by path)")
+        log(f"--limit: using the first {len(paths)} photos (sorted by path)")
 
     models = []
     if a.iqa:
@@ -1000,10 +1071,15 @@ def main():
 
     # the cache is appended to, never rebuilt: only new/changed files and new models get scored
     rel = {p: str(p.relative_to(a.folder)).replace("\\", "/") for p in paths}
-    changed = 0
-    for p in paths:
+    changed = new_files = 0
+    log(f"Checking {len(paths)} photos against the cache (size and modified time of each file) ...")
+    for n, p in enumerate(paths, 1):
+        if n % 200 == 0 and (sys.stdout.isatty() or n % 5000 == 0):
+            status(f"[checking] {n}/{len(paths)} photos")
         fp = fingerprint(p)
         old = cache["files"].get(rel[p])
+        if old is None:
+            new_files += 1
         if old is not None and old != fp:  # image was modified: its old scores no longer apply
             changed += 1
             for sc in cache["scores"].values():
@@ -1013,18 +1089,21 @@ def main():
             for key in [k for k in cache["face_labels"] if k.rpartition("#")[0] == rel[p]]:
                 del cache["face_labels"][key]  # face indexes of a modified image no longer line up
         cache["files"][rel[p]] = fp
-    if changed:
-        print(f"{changed} modified image(s): old results dropped, will be re-analysed")
+    status(None)
+    log(f"Cache check done: {new_files} new to this cache, {changed} modified, {len(paths) - new_files - changed} unchanged"
+        + (" (first run for this folder: every photo is analysed, which takes a long time; progress per model follows)"
+           if new_files == len(paths) else ""))
 
+    if a.faces is not False:
+        log(f"Faces folder: {faces_dir} ({faces_how})")
     if a.faces is None:  # not decided on the command line
         a.faces = True
         if first_run_without_persons(cache, faces_dir):
-            if ask_faces_first():
+            if ask_faces_first(faces_dir):
                 a.iqa = a.classify = False  # faces-only
             else:
                 a.faces = False
     if a.faces:
-        print(f"Faces folder: {faces_dir} ({faces_how})")
         for other, how in faces_others:
             print(f"  NOTE: another _faces folder exists and is NOT used: {other} ({how}). "
                   "Move its named folders into the one above if they hold people you have named.", file=sys.stderr)
@@ -1034,12 +1113,15 @@ def main():
             print(f"WARNING: cache was scored at --max-side {cache['max_side']}, now {a.max_side}; "
                   "new scores are mixed with old ones (use --fresh to start over)", file=sys.stderr)
         cache["max_side"] = a.max_side
+        log(f"Scoring quality: {len(models)} models ({', '.join(models)}) on {len(paths)} photos. "
+            "Progress and time left are shown per model; you can stop with Ctrl+C and continue later.")
         run_models(a.folder, paths, models, a.device, a.max_side, cache, cache_path)
         save_cache(cache_path, cache)
 
     # content analysis: keywords + people
     content = {}
     if a.classify or a.faces:
+        log("Analysing " + " and ".join(x for x, on in (("image types (CLIP keywords)", a.classify), ("faces", a.faces)) if on) + " ...")
         content = run_content(a.folder, paths, rel, cache, cache_path, a, faces_dir)
 
     # Combine every model in the cache (honouring --exclude), not just this run's --models,
@@ -1047,7 +1129,16 @@ def main():
     used = [m for m in cache["scores"] if cache["scores"][m] and m in cache["models"] and m not in set(a.exclude)]
     if not used and not content:
         sys.exit("Nothing was scored.")
-    print(f"\nCombining {len(used)} models: {', '.join(used)}")
+    unknown = [m for m in used if cache["models"][m].get("range") is None]
+    if unknown:   # ranges stored by an earlier version could not be read: refill them from pyiqa's model table
+        ensure_imported("pyiqa", "Looking up the score ranges of the models (pyiqa)")
+        for m in unknown:
+            cache["models"][m]["range"] = config_range(m)
+        fixed = [m for m in unknown if cache["models"][m]["range"]]
+        if fixed:
+            log(f"Score ranges restored for {', '.join(fixed)}; star ratings use them now (absolute mode)")
+        save_cache(cache_path, cache)
+    log(f"Combining the ratings of {len(used)} models ...")
     per_image = {}  # relpath -> {model: (stars, score)}
     for m in used:
         sc = cache["scores"][m]
@@ -1057,11 +1148,12 @@ def main():
 
     json_path = a.json_out or (a.folder / RESULTS_NAME)
     write_results_json(json_path, a, per_image, used, cache, content)
-    print(f"Wrote combined results ({len(set(per_image) | set(content))} images): {json_path}")
+    log(f"Wrote combined results ({len(set(per_image) | set(content))} images): {json_path}")
 
     named = sum(1 for e in content.values() for pr in e.get("people", []) if pr.get("name"))
-    print(f"\nDone: {len(set(per_image) | set(content))} images, {len(used)} models"
-          + (f", {named} faces named" if content else "") + ".")
+    took = int(time.time() - _T0)
+    log(f"Done in {took // 3600}h{took % 3600 // 60:02d}m{took % 60:02d}s: {len(set(per_image) | set(content))} images, {len(used)} models"
+        + (f", {named} faces named" if content else "") + ".")
     print("Nothing was written into or next to your photos. Next steps:")
     print(f'  imageautorater-write-xmp  "{a.folder}"    (XMP sidecar files)')
     print(f'  imageautorater-write-exif "{a.folder}"    (inside JPEG/PNG files; asks first, --backup DIR available)')
