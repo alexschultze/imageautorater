@@ -83,6 +83,8 @@ src/imageautorater/
     write_xmp.py        XMP sidecar files (imageautorater-write-xmp)
     write_exif.py       metadata inside JPEG/PNG files (imageautorater-write-exif)
     gallery.py          web page builder (imageautorater-gallery)
+    gallery_thumbs.py   thumbnails for the gallery (parallel, resumable)
+    gallery_page/       the page itself: index.html, gallery.css, gallery.js, logic.js (pure functions, tested with node)
 tests/                  pytest
 .github/workflows/      ci.yml (tests on push/PR), release.yml (tag v* -> wheel on a GitHub release)
 PLAN.md                 plan for the GUI and distribution
@@ -183,21 +185,26 @@ _faces\
 
 With no options the script uses `gpu` when it finds a GPU and `cpu` otherwise (force it with `--device cpu`). Ratings always combine every model already in the cache, so you can start with `cpu` and later add the other models with `--preset gpu --max-side 1024`. The `--max-side` keeps the image size the same as the first run; without it the script warns that old and new scores were made at different sizes.
 
-## Gallery: browse the ranking
+## Gallery: browse and compare the rankings
 
-`imageautorater-gallery` turns the results of a photo folder into one web page:
+`imageautorater-gallery` turns the results of a photo folder into a web page. Run it on the folder you rated (typically the root with one subfolder per year):
 
 ```
-imageautorater-gallery "C:\Photos\2025" --open
+imageautorater-gallery "C:\Photos" --open
 ```
 
-It reads `iqa_results.json` and writes `gallery.html` next to it (open it with a double click; it needs no server). Small thumbnails are cached in `.iqa_thumbs\` inside the photo folder, so the page is fast even with large originals. Photos are never modified.
+It reads `iqa_results.json` and writes `gallery.html` plus a `gallery_data\` folder next to it (open the page with a double click; it needs no server; keep the page, `gallery_data\` and the photos in place, since the page loads the data of a folder when you select it and links to the originals by relative path). Photos are never modified.
 
-- **Per folder:** photos are grouped by subfolder, best first, showing the top 50 of each (`--top`). **Show more** reveals the next 50. Pick one folder, or "All folders, merged" for one list that keeps loading as you scroll.
-- **Sorting:** overall (mean of all models, on a 0-100 scale), mean stars, any single model by its own score, or file name; best first or worst first. Models where lower is better (such as NIQE) are handled.
+- **Thumbnails:** one small JPEG (360 px, `--thumb-size`) per photo, made once for all photos, in parallel (`--jobs`), in `.iqa_thumbs\` (`--thumb-dir`). Re-runs only make the missing ones. `--thumbs-only` makes them without writing the page.
+- **Folders:** the tree on the left selects which photos take part. **Selecting a folder includes all its subfolders**; untick one to leave it out. The ranking is made **per group** (default: per top-level folder, i.e. per year; choose another level under *Per*), showing the top 50 of each (*Top*, `--top`). **Show more** reveals the next ones.
+- **Rankings:** overall (mean of all models, 0-100), mean stars, any single model by its own score, file name, or a **custom blend**: set a weight per model in the side panel (by default every model is first turned into a percentile among the selected photos, so no model counts for more just because its scores are spread wider). Blends can be saved under a name. Models where lower is better (such as NIQE) are handled.
+- **Compare side by side:** 2 to 4 rankings (A-D) next to each other for the same photos. Photos that are in the top of every list or of several lists are marked, each list shows how many photos it shares with the others, and hovering a photo highlights it in all lists.
+- **Rank change:** pick ranking A and B; shows the photos in the top of either, with their rank in B, biggest change first (green: B ranks it higher). Restrict to the photos only in A's top or only in B's top.
 - **Filters:** minimum stars, person, keyword, file name.
-- **Large view:** click a photo for a big picture with every model's score and stars; arrow keys move through the list, Esc closes.
-- Options: `--out` for another output file, `--no-thumbs` to use the originals, `--thumb-size`, `--results` for another results file.
+- **Large view:** click a photo for a big picture with every model's score and its rank in each compared list; arrow keys move through the list, Esc closes. **Open original** (also on every card on hover) opens the file itself; **Copy path** copies its full path.
+- **Export:** *Export list* saves the full paths of the photos shown (for copying the best 50 per year somewhere), *Export CSV* adds rank and scores.
+- The choices are kept in the address of the page, so a view can be bookmarked and reloaded.
+- Other options: `--out` for another output file, `--no-thumbs` to use the originals, `--embed` to put all data into `gallery.html` (one file, large for big libraries), `--results` for another results file.
 
 Run `imageautorater-gallery` again after each `imageautorater-rate` run to refresh the page.
 

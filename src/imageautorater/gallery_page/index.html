@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo ranking</title>
+<style>
+/*__CSS__*/
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Photo ranking<small id="count"></small></h1>
+  <div class="bar">
+    <div class="tabs" id="views" role="tablist">
+      <button data-v="list" class="on">Ranking</button><button data-v="compare">Compare side by side</button><button data-v="delta">Rank change</button>
+    </div>
+    <span id="rankctl" class="bar">
+      <label>Rank by <select id="rank"></select></label>
+      <label>Order <select id="dir"><option value="-1">best first</option><option value="1">worst first</option></select></label>
+    </span>
+    <span id="cmpctl" class="bar" hidden></span>
+    <span id="dltctl" class="bar" hidden></span>
+    <label>Top <input id="topn" type="number" min="1" max="1000" step="1" value="50"></label>
+    <label>Per <select id="depth"></select></label>
+    <button id="exp-txt" title="Paths of the photos shown, one per line">Export list</button>
+    <button id="exp-csv" title="Rank, path and scores of the photos shown">Export CSV</button>
+  </div>
+  <div class="bar filters">
+    <label>Min stars <select id="minstars"><option value="0">any</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
+    <label>Person <select id="person"></select></label>
+    <label>Keyword <select id="tag"></select></label>
+    <label>Search <input id="q" type="search" placeholder="file name" size="14"></label>
+  </div>
+</header>
+<div id="layout">
+  <aside id="side">
+    <details open>
+      <summary>Folders</summary>
+      <div class="bar small"><button id="all">All</button><button id="none">None</button><button id="expand">Expand</button><button id="collapse">Collapse</button></div>
+      <div id="tree"></div>
+      <p class="hint">Selecting a folder includes all its subfolders; untick one to leave it out.</p>
+    </details>
+    <details id="blendbox">
+      <summary>Custom blend</summary>
+      <div id="blend"></div>
+    </details>
+  </aside>
+  <main id="main"></main>
+</div>
+<div id="lb"><div id="lbimg"></div><div id="lbside"></div><button id="lbx" title="Close (Esc)">&times;</button></div>
+<script id="index" type="application/json">/*__INDEX__*/null</script>
+<!--__DATA__-->
+<script>
+/*__LOGIC__*/
+</script>
+<script>
+/*__JS__*/
+</script>
+</body>
+</html>
