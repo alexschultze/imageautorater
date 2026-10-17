@@ -205,6 +205,18 @@ Run `imageautorater-gallery` again after each `imageautorater-rate` run to refre
 
 Everything is cached, including scores, CLIP embeddings and face embeddings. An interrupted run resumes where it stopped. Re-runs only analyse new or modified photos and new models. Ratings always combine every model in the cache. `--fresh` starts a new cache and keeps the old one as `.bak`.
 
+## Troubleshooting
+
+**The GPU is not used ("device: cpu" on a machine with an NVIDIA card).** The log line after loading PyTorch says which build you have, for example `PyTorch 2.5.0+cpu (CPU-only build); device: cpu`, and when an NVIDIA GPU is present but not used the program prints a warning saying why. The usual cause is a CPU-only PyTorch: on Windows the default PyTorch from PyPI has no CUDA, and `uv sync` in a source checkout installs the CPU build on purpose. Reinstall the right build in the environment you run from:
+
+```
+uv pip install --reinstall torch torchvision --torch-backend=auto
+```
+
+Check it with `python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"`: you want a CUDA version and `True`. If it prints `True` for a CUDA build but the program still says CPU, or `False` with a CUDA build, update the NVIDIA driver (`nvidia-smi` must work and show a GPU). The `auto` preset chooses the 9-model GPU set only when a GPU is really in use, so a CPU-only PyTorch also shows up as the 5-model preset. Results already in the cache are kept; only the remaining photos are scored on the GPU after you restart.
+
+**A big folder on a network share (NAS) is slow to start.** The folder is read with directory listings, which is fast even for tens of thousands of photos (35,000 photos in about 10 seconds on a NAS). The progress lines `[mm:ss]` show every phase.
+
 ## Notes
 
 - The first run downloads model weights (CLIP about 600 MB, plus each pyiqa model).

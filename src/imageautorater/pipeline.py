@@ -44,28 +44,50 @@ RAW_EXT = {".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef
 CACHE_NAME = "iqa_scores.json"
 RESULTS_NAME = "iqa_results.json"
 
+_STAMPS = {}   # str(path) -> "size:mtime" read from the directory listing, so no extra request per file is needed
+
+
 def find_images(folder: Path, recursive: bool, include_raw: bool, exclude=(), progress=None):
-    """Photos in a folder. Never returned: anything inside a hidden (dot) folder such as the gallery's .iqa_thumbs, or in any _faces folder,
-    and anything inside one of the `exclude` folders (e.g. a faces folder that sits inside the photo folder).
-    progress(n_entries_looked_at, n_photos_found) is called every 500 entries so a big folder shows life signs."""
+    """Photos in a folder. Never returned: anything inside a hidden (dot) folder such as the gallery's .iqa_thumbs, or in
+    any _faces folder, and anything inside one of the `exclude` folders (e.g. a custom faces folder in the photo folder).
+    progress(n_entries_looked_at, n_photos_found) is called every 500 entries so a big folder shows life signs.
+
+    Uses os.scandir: the size and modified time of every file come with the directory listing, which on a network share
+    (NAS, SMB) is the difference between minutes and many tens of minutes compared with asking per file. Those stamps
+    are remembered for fingerprint(), so the cache check needs no second pass over the files."""
     exts = IMG_EXT | (RAW_EXT if include_raw else set())
-    base = folder.resolve()
-    skip = [Path(e).resolve() for e in exclude]
-    it = folder.rglob("*") if recursive else folder.glob("*")
-    out, seen = [], 0
-    for p in it:
-        seen += 1
-        if progress and seen % 500 == 0:
-            progress(seen, len(out))
-        if not p.is_file() or p.suffix.lower() not in exts:
+    skip = set()
+    for e in exclude:
+        skip.add(os.path.normcase(os.path.abspath(str(e))))
+        skip.add(os.path.normcase(str(Path(e).resolve())))
+    out, seen, stack = [], 0, [str(folder)]
+    while stack:
+        top = stack.pop()
+        try:
+            it = os.scandir(top)
+        except OSError as err:
+            print(f"WARNING: cannot read {top}: {err}", file=sys.stderr)
             continue
-        rel_parent = p.relative_to(folder).parts[:-1]
-        if any(part.startswith(".") or part == "_faces" for part in rel_parent):
-            continue   # hidden folders (.iqa_thumbs, ...) and any _faces folder hold no photos
-        parents = (base.joinpath(*rel_parent),) + tuple(base.joinpath(*rel_parent).parents)
-        if any(s in parents for s in skip):
-            continue
-        out.append(p)
+        with it:
+            for entry in it:
+                seen += 1
+                if progress and seen % 500 == 0:
+                    progress(seen, len(out))
+                try:
+                    if entry.is_dir():
+                        name = entry.name
+                        if (recursive and not name.startswith(".") and name != "_faces"
+                                and os.path.normcase(os.path.abspath(entry.path)) not in skip):
+                            stack.append(entry.path)
+                        continue
+                    if not entry.is_file() or os.path.splitext(entry.name)[1].lower() not in exts:
+                        continue
+                    st = entry.stat()
+                except OSError:
+                    continue
+                path = Path(entry.path)
+                _STAMPS[str(path)] = f"{st.st_size}:{int(st.st_mtime)}"
+                out.append(path)
     return sorted(out)
 
 
@@ -143,6 +165,11 @@ def save_cache(path: Path, cache):
 
 
 def fingerprint(p: Path):
+    """Size and modified time (whole seconds) of a file. Uses the stamp find_images already read from the directory
+    listing, once; otherwise asks the file system."""
+    hint = _STAMPS.pop(str(p), None)
+    if hint:
+        return hint
     st = p.stat()
     return f"{st.st_size}:{int(st.st_mtime)}"
 
@@ -361,20 +388,84 @@ def load_labels(path):
     return labels
 
 
+def nvidia_gpus():
+    """NVIDIA GPUs the driver sees ('name, driver version' per line), found with nvidia-smi, independent of PyTorch.
+    Empty when there is no NVIDIA driver or no GPU."""
+    import shutil
+    import subprocess
+
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return []
+    try:
+        out = subprocess.run([exe, "--query-gpu=name,driver_version", "--format=csv,noheader"],
+                             capture_output=True, text=True, timeout=20).stdout
+    except Exception:
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+GPU_FIX = ("Fix: in the environment you run this from, reinstall PyTorch with the right build:\n"
+           "       uv pip install --reinstall torch torchvision --torch-backend=auto\n"
+           "     (On Windows the default PyTorch from PyPI is CPU-only, and `uv sync` in a source checkout also installs the "
+           "CPU build.)")
+
+
+def hardware_report(torch, dev, gpus):
+    """(summary line, warning or None) for the chosen device. The warning explains why an NVIDIA GPU is NOT used."""
+    cuda = getattr(torch.version, "cuda", None)
+    build = f"CUDA {cuda}" if cuda else ("ROCm " + torch.version.hip if getattr(torch.version, "hip", None) else "CPU-only build")
+    name = ""
+    if dev.type == "cuda":
+        try:
+            name = f" ({torch.cuda.get_device_name(dev.index or 0)})"
+        except Exception:
+            pass
+    line = f"PyTorch {torch.__version__} ({build}); device: {dev}{name}"
+    if dev.type != "cpu" or not gpus:
+        return line, None
+    if not cuda:
+        why = (f"WARNING: an NVIDIA GPU is present ({gpus[0]}) but this PyTorch is a CPU-only build, so the GPU is NOT used "
+               f"and everything runs on the CPU, many times slower.\n  {GPU_FIX}")
+    else:
+        why = (f"WARNING: an NVIDIA GPU is present ({gpus[0]}) and PyTorch has CUDA support ({cuda}), but "
+               "torch.cuda.is_available() is False, so the CPU is used. Usual causes: the NVIDIA driver is too old for this "
+               "CUDA version (update the driver; `nvidia-smi` shows the newest CUDA it supports), or the GPU is not visible "
+               "in this session (remote desktop, a container or WSL without GPU access).")
+    return line, why
+
+
+_hardware_reported = False
+
+
 def pick_device(arg):
-    """--device if given, otherwise the best available accelerator: CUDA (NVIDIA/ROCm), Intel XPU, Apple MPS, CPU."""
+    """--device if given, otherwise the best available accelerator: CUDA (NVIDIA/ROCm), Intel XPU, Apple MPS, CPU.
+    The first call also reports the PyTorch build and the device, and explains when an NVIDIA GPU is not used."""
+    global _hardware_reported
     ensure_imported("torch", "Loading PyTorch (nothing is installed; the first start can take a minute or more)")
     import torch
 
+    if arg and arg.startswith("cuda") and not torch.cuda.is_available():
+        gpus = nvidia_gpus()
+        _, why = hardware_report(torch, torch.device("cpu"), gpus or ["NVIDIA GPU"])
+        sys.exit(f"--device {arg} was requested but CUDA is not available in this PyTorch.\n{why or ''}".rstrip())
     if arg:
-        return torch.device(arg)
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if hasattr(torch, "xpu") and torch.xpu.is_available():
-        return torch.device("xpu")
-    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
+        dev = torch.device(arg)
+    elif torch.cuda.is_available():
+        dev = torch.device("cuda")
+    elif hasattr(torch, "xpu") and torch.xpu.is_available():
+        dev = torch.device("xpu")
+    elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        dev = torch.device("mps")
+    else:
+        dev = torch.device("cpu")
+    if not _hardware_reported:
+        _hardware_reported = True
+        line, why = hardware_report(torch, dev, nvidia_gpus() if dev.type == "cpu" else [])
+        log(line)
+        if why:
+            print(why, file=sys.stderr, flush=True)
+    return dev
 
 
 # Model presets. musiq/topiq_nr/clipiqa/liqe/nima: a diverse, reasonably light set that works on a CPU. The GPU set adds
