@@ -25,6 +25,21 @@ def test_setuptools_stays_below_the_release_without_pkg_resources():
     assert "setuptools<82" in PYPROJECT["project"]["dependencies"]
 
 
+def test_workflow_files_are_valid_yaml_with_runnable_steps():
+    """GitHub refuses an invalid workflow file ('workflow file issue') and CI then runs nothing at all. A colon followed
+    by a space in an unquoted step name caused exactly that."""
+    import pytest
+    yaml = pytest.importorskip("yaml")
+    files = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+    assert files
+    for f in files:
+        doc = yaml.safe_load(f.read_text(encoding="utf-8"))
+        assert doc.get("jobs"), f
+        for name, job in doc["jobs"].items():
+            for step in job["steps"]:
+                assert "uses" in step or "run" in step, (f.name, name, step)
+
+
 def test_the_commands_users_are_told_to_run_exist():
     scripts = PYPROJECT["project"]["scripts"]
     assert set(scripts) == {"imageautorater-rate", "imageautorater-write-xmp", "imageautorater-write-exif", "imageautorater-gallery"}
