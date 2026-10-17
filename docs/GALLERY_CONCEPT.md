@@ -27,7 +27,12 @@ everything in one HTML file (a 35,000-photo library means a 10+ MB page); no way
 
 ### 3.1 Selector (which photos take part)
 - Folder **tree with checkboxes**, built from the relative paths. Depth 1 = years. Check any mix of years/albums.
+- **Selecting a folder always includes all its subfolders, at any depth.** Ticking `2023` ticks every folder below it (tri-state
+  boxes: partly ticked parents show a dash). A subfolder can be unticked afterwards to exclude it (e.g. `2023/Screenshots`).
+  A photo is in the selection when its own folder is ticked; photos lying directly in a ticked folder count too.
+- Counts next to each node are cumulative (the folder plus everything below it).
 - **Group level** control: rank *per group at depth N* (default 1 = per year), top N each (default 50), or "all selected, merged".
+  A group contains everything below it, so the top 50 of `2023` is drawn from `2023` and all of its subfolders together.
 - Counts next to each node (photos, with/without scores). Selection, ranking and filters are kept in the URL hash
   (`#sel=2023,2024&rank=blend:...&n=50`) so a view can be bookmarked; localStorage only as fallback.
 
@@ -109,7 +114,7 @@ iqa_results.json (root)  ──►  gallery.py (build)  ──►  <out>/gallery
 ## 8. Assumptions I will use unless you object
 1. Thumbnail folder stays `.iqa_thumbs` in the root (hidden, not scanned); a visible `_thumbs` is a one-flag change.
 2. Blend defaults to percentile normalisation within the selection.
-3. "Year" = first path component; photos directly in the root form a group "(top folder)".
+3. "Year" = first path component and includes all its subfolders; photos directly in the root form a group "(top folder)".
 4. Originals are linked by `file://` relative to the page, so the page must stay in (or below the same drive as) the photo root;
    `gallery.html` is written to `<root>/gallery.html` as today.
 5. No writing back (no star changes, no file moves/copies) from the page: export lists only.
