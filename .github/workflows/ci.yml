@@ -15,9 +15,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - name: Install (pyproject points torch at the CPU index for `uv sync`, so no GPU libraries are downloaded)
-        run: uv sync --group dev
+      - name: Install (CPU-only PyTorch: small, and the runners have no GPU)
+        run: |
+          uv venv
+          uv pip install -e . --group dev --torch-backend=cpu
       - name: Tests
-        run: uv run pytest -q
+        run: uv run --no-sync pytest -q
       - name: Build wheel (smoke test)
         run: uv build

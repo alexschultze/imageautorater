@@ -40,17 +40,9 @@ dev = ["pytest>=8"]
 [tool.hatch.build.targets.wheel]
 packages = ["src/imageautorater"]
 
-# Development and CI (`uv sync`) use the small CPU build of torch. These tables are not part of the built wheel, so
-# end users are not affected: they pick the right build with `uv pip install ... --torch-backend=auto` (see PLAN.md).
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[tool.uv.sources]
-torch = { index = "pytorch-cpu" }
-torchvision = { index = "pytorch-cpu" }
-
+# Do NOT add [tool.uv.sources] / [[tool.uv.index]] entries for torch here. uv applies them to everyone who installs this
+# package from git, which silently overrides `--torch-backend=auto` and installs the CPU-only PyTorch even on NVIDIA
+# machines. Development and CI choose the build on the command line instead (`--torch-backend=cpu`, see the workflow).
 [tool.uv]
 # facenet-pytorch pins torch<2.3 / torchvision<0.18 / numpy<1.25 / pillow<10.3; replace those pins when it is installed.
 override-dependencies = ["torch>=2.2", "torchvision>=0.17", "numpy>=1.26", "pillow>=10.2"]

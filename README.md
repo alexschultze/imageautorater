@@ -67,7 +67,9 @@ If that prints the help text, everything works. A first scan (and the model down
 ```
 git clone https://github.com/alexschultze/imageautorater
 cd imageautorater
-uv sync --group dev     # CPU torch, see pyproject.toml; add --extra faces for person identification
+uv venv
+uv pip install -e ".[faces]" --group dev --torch-backend=auto    # or =cpu on a machine without a GPU
+# (the faces extra pins an old torch; if it complains, install it as in the Install section: uv pip install --no-deps facenet-pytorch)
 uv run pytest           # fast; uses stand-ins for the models, downloads nothing
 uv run imageautorater-rate --help
 uv build                # wheel in dist/
