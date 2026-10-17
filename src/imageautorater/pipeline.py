@@ -13,9 +13,10 @@ This command does NOT write any metadata into or next to your photos. Do that as
 Content analysis (on by default; needs `transformers`, and `facenet-pytorch` for faces):
   * Image type keywords via CLIP zero-shot classification (portrait, landscape, food, ...).
     Edit the vocabulary with --labels labels.txt (one label per line, optional "label: prompt").
-  * Person identification with ONE ground truth: a single faces/ folder (see default_faces_dir), shared by every
-    photo folder you process. faces/<Name>/ holds confirmed faces of that person (crops you moved there and/or
-    reference photos you dropped in). Unrecognised faces are grouped into faces/person_NNNN/ for you to
+  * Person identification with ONE ground truth: a single _faces/ folder (see resolve_faces_dir: by default next to
+    the photo folder you scan, or a custom folder via --faces-dir), shared by every
+    photo folder you process. _faces/<Name>/ holds confirmed faces of that person (crops you moved there and/or
+    reference photos you dropped in). Unrecognised faces are grouped into _faces/person_NNNN/ for you to
     name by renaming the folder or moving crops. Names then carry over to every photo folder.
   Keywords (recognised names first, then image types) are stored in iqa_results.json; the write commands turn them
   into photo keywords later.
@@ -43,10 +44,25 @@ RAW_EXT = {".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef
 CACHE_NAME = "iqa_scores.json"
 RESULTS_NAME = "iqa_results.json"
 
-def find_images(folder: Path, recursive: bool, include_raw: bool):
+def find_images(folder: Path, recursive: bool, include_raw: bool, exclude=()):
+    """Photos in a folder. Never returned: anything inside a hidden (dot) folder such as the gallery's .iqa_thumbs,
+    and anything inside one of the `exclude` folders (e.g. a faces folder that sits inside the photo folder)."""
     exts = IMG_EXT | (RAW_EXT if include_raw else set())
+    base = folder.resolve()
+    skip = [Path(e).resolve() for e in exclude]
     it = folder.rglob("*") if recursive else folder.glob("*")
-    return sorted(p for p in it if p.is_file() and p.suffix.lower() in exts)
+    out = []
+    for p in it:
+        if not p.is_file() or p.suffix.lower() not in exts:
+            continue
+        rel_parent = p.relative_to(folder).parts[:-1]
+        if any(part.startswith(".") for part in rel_parent):
+            continue
+        parents = (base.joinpath(*rel_parent),) + tuple(base.joinpath(*rel_parent).parents)
+        if any(s in parents for s in skip):
+            continue
+        out.append(p)
+    return sorted(out)
 
 
 def load_image(path: Path, max_side: int):
@@ -402,12 +418,12 @@ class Faces:
                 for (b, pr), v in zip(kept, e)]
 
 
-# ---- single ground truth for faces: the faces/ folder (default_faces_dir) ---------------------------------------
-#   faces/<Name>/      confirmed faces of that person: crops you moved there, and/or reference photos you dropped in
-#   faces/_<anything>/ "not a known person" (junk detections); never named
-#   faces/person_NNNN/   every not-yet-known face shows up here, waiting for you to name it (rename the folder)
-#   faces/.crops.json  the face embedding behind every crop and reference photo, i.e. the ground truth itself
-# One faces/ folder serves every photo folder you ever process.
+# ---- single ground truth for faces: the _faces/ folder (resolve_faces_dir) --------------------------------------
+#   _faces/<Name>/      confirmed faces of that person: crops you moved there, and/or reference photos you dropped in
+#   _faces/_<anything>/ "not a known person" (junk detections); never named
+#   _faces/person_NNNN/   every not-yet-known face shows up here, waiting for you to name it (rename the folder)
+#   _faces/.crops.json  the face embedding behind every crop and reference photo, i.e. the ground truth itself
+# One _faces/ folder serves every photo folder you ever process.
 CROP_RE = re.compile(r"^([0-9a-f]{6})_c(\d+)_([0-9a-f]{8})_(\d+)__(.*)\.jpe?g$", re.IGNORECASE)  # <id>_c0007_<hash>_<i>__<stem>.jpg
 OLD_CROP_RE = re.compile(r"^c\d+_.*\.jpe?g$", re.IGNORECASE)  # crops from earlier versions
 UNNAMED_RE = re.compile(r"^(person|cluster)_(?:[0-9a-f]{6}_)?\d+$", re.IGNORECASE)
@@ -415,24 +431,49 @@ RECORDS_FILE = ".crops.json"
 SAME_FACE = 0.9  # cosine similarity above which two embeddings count as the same face
 
 
-def default_faces_dir() -> Path:
-    """Where the single ground-truth faces/ folder lives when --faces-dir is not given:
-    1. $IMAGEAUTORATER_FACES, if set;
-    2. <repository>/faces when running from a source checkout (the folder holding pyproject.toml; git-ignored);
-    3. otherwise the per-user data folder (%LOCALAPPDATA%\\imageautorater\\faces on Windows,
-       ~/.local/share/imageautorater/faces elsewhere), because a pip/uv-installed package must not write into
-       site-packages."""
-    env = os.environ.get("IMAGEAUTORATER_FACES")
-    if env:
-        return Path(env).expanduser()
-    repo = Path(__file__).resolve().parents[2]
-    if (repo / "pyproject.toml").is_file() and (repo / "src" / "imageautorater").is_dir():
-        return repo / "faces"
+def user_data_faces_dir() -> Path:
+    """%LOCALAPPDATA%\\imageautorater\\_faces on Windows, ~/.local/share/imageautorater/_faces elsewhere."""
     if os.name == "nt":
         base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
     else:
         base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
-    return base / "imageautorater" / "faces"
+    return base / "imageautorater" / "_faces"
+
+
+def resolve_faces_dir(photo_folder: Path, explicit: "Path | None" = None):
+    """Find the single ground-truth _faces/ folder for a scan. Returns (folder, how, others) where `others` are other
+    _faces folders that exist but are NOT used (so a split ground truth never goes unnoticed).
+
+    Order of preference:
+      1. --faces-dir                         a custom folder you name
+      2. $IMAGEAUTORATER_FACES               a custom folder for all scans
+      3. <parent of the photo folder>/_faces NEXT TO the folder you scan (the primary choice): scanning
+                                             D:\\Photos\\2025 uses D:\\Photos\\_faces, shared by 2024, 2025, ...
+      4. <repository>/_faces                 when running from a source checkout (git-ignored)
+      5. the per-user data folder
+    From 3 on, the first folder that already exists is used. If none exists yet, it is created next to the photo
+    folder (3), or in the per-user data folder (5) when that location is not writable."""
+    if explicit:
+        return explicit, "--faces-dir", []
+    env = os.environ.get("IMAGEAUTORATER_FACES")
+    if env:
+        return Path(env).expanduser(), "$IMAGEAUTORATER_FACES", []
+    folder = photo_folder.resolve()
+    candidates = []
+    sibling = folder.parent / "_faces"
+    if sibling != folder and folder not in sibling.parents:   # never the folder being scanned, nor inside it
+        candidates.append((sibling, "next to the photo folder"))
+    repo = Path(__file__).resolve().parents[2]
+    if (repo / "pyproject.toml").is_file() and (repo / "src" / "imageautorater").is_dir():
+        candidates.append((repo / "_faces", "in the source checkout"))
+    candidates.append((user_data_faces_dir(), "per-user data folder"))
+    existing = [c for c in candidates if c[0].is_dir()]
+    if existing:
+        return existing[0][0], existing[0][1], existing[1:]
+    first = candidates[0]
+    if first[1] == "next to the photo folder" and os.access(first[0].parent, os.W_OK):
+        return first[0], first[1] + " (new)", []
+    return candidates[-1][0], candidates[-1][1] + " (new)", []
 
 
 def folder_id(folder: Path) -> str:
@@ -473,7 +514,7 @@ STATE_FILE = ".state.json"
 
 
 def person_allocator(faces_dir: Path):
-    """Numbers for new person_NNNN folders: one counter for the whole faces/ folder (kept in .state.json), always
+    """Numbers for new person_NNNN folders: one counter for the whole _faces/ folder (kept in .state.json), always
     above any person_NNNN folder that exists, so a number is never reused after you rename a folder."""
     state = faces_dir / STATE_FILE
     n = 1
@@ -508,8 +549,8 @@ def named_persons_exist(faces_dir: Path) -> bool:
 def scan_faces_dir(faces_dir: Path, cache, fid: str, get_faces, min_face):
     """Read the ground-truth folder.
 
-    * A crop (or reference photo) inside faces/<Name>/ confirms that face as <Name>.
-    * Inside faces/_something/ it means 'not a known person'. Inside person_NNNN it carries no label.
+    * A crop (or reference photo) inside _faces/<Name>/ confirms that face as <Name>.
+    * Inside _faces/_something/ it means 'not a known person'. Inside person_NNNN it carries no label.
     The embedding of every face is stored in .crops.json, so a confirmation is about the face itself: it does not
     depend on file names, photo order, face indexes, the cache, or which photo folder is being processed. For the
     photo folder being processed, confirmations are bound to today's faces by content (embedding similarity),
@@ -544,7 +585,7 @@ def scan_faces_dir(faces_dir: Path, cache, fid: str, get_faces, min_face):
             elif OLD_CROP_RE.match(f.name) and not label:
                 old_crops += 1  # old crop in an unnamed or _ folder: nothing to learn from it
             elif f.suffix.lower() in IMG_EXT and label:
-                # A photo in faces/<Name>/ with no crop record: a reference photo you dropped in, or a crop from an
+                # A photo in _faces/<Name>/ with no crop record: a reference photo you dropped in, or a crop from an
                 # earlier version. Its largest face is embedded once and stored, then confirmed as <Name>.
                 key = "ref:" + "/".join(parts)
                 fp = fingerprint(f)
@@ -685,9 +726,9 @@ def assign_clusters(cache, threshold, exemplars, face_threshold, margin):
 
 def export_crops(faces_dir: Path, fid, cache, records, by_rel, counts, have, folder_of, existing, per_cluster, min_cluster,
                  max_side):
-    """Write sample crops of each *unnamed* cluster into faces/person_NNNN/ for you to name. Folders you have
+    """Write sample crops of each *unnamed* cluster into _faces/person_NNNN/ for you to name. Folders you have
     named are never added to, so nothing unconfirmed can end up in them. Folder numbers come from one counter for
-    the whole faces/ folder, so they are unique across photo folders and never reused after you rename a folder."""
+    the whole _faces/ folder, so they are unique across photo folders and never reused after you rename a folder."""
     alloc, save_counter = person_allocator(faces_dir)
     cands = {}
     for k, faces in cache["faces"].items():
@@ -805,7 +846,7 @@ def run_content(folder, paths, rel, cache, cache_path, a, faces_dir):
 
     exemplars = {}
     if state["faces_ok"]:
-        # the faces/ folder is the single ground truth; every other face is matched against it
+        # the _faces/ folder is the single ground truth; every other face is matched against it
         records, have, folder_of, existing, max_cid, confirmed = scan_faces_dir(faces_dir, cache, fid, get_faces, a.min_face)
         cache["clusters_next"] = max(cache["clusters_next"], max_cid + 1)  # never reuse an id that has crops on disk
         exemplars = build_exemplars(confirmed)
@@ -845,7 +886,7 @@ def run_content(folder, paths, rel, cache, cache_path, a, faces_dir):
 
 
 def first_run_without_persons(cache, faces_dir):
-    """True when no person is known yet (nothing confirmed in the faces folder) and this photo folder has no
+    """True when no person is known yet (nothing confirmed in the _faces folder) and this photo folder has no
     analysed faces."""
     if cache["faces"]:
         return False  # faces already detected on an earlier run: just carry on
@@ -854,7 +895,7 @@ def first_run_without_persons(cache, faces_dir):
 
 def ask_faces_first():
     """Returns True for faces-only (the default), False to proceed without face recognition."""
-    print("\nNo persons are known yet (nothing confirmed in the faces folder).")
+    print("\nNo persons are known yet (nothing confirmed in the _faces folder).")
     print("  [F] Run --faces-only first: detect and group the faces, then you name them (default)")
     print("  [P] Proceed without face recognition (quality scores and keywords only)")
     if not sys.stdin or not sys.stdin.isatty():
@@ -905,8 +946,9 @@ def main():
                     help="face detection + person identification. Unset: on, but the first run with no known persons "
                          "asks whether to do --faces-only or proceed without faces")
     ap.add_argument("--faces-dir", type=Path,
-                    help="the single ground-truth folder for faces (default: $IMAGEAUTORATER_FACES, else ./faces in a source "
-                         "checkout, else the per-user data folder; see README)")
+                    help="a custom ground-truth folder for faces. Default: a '_faces' folder NEXT TO the photo folder "
+                         "(D:\\Photos\\2025 -> D:\\Photos\\_faces), then $IMAGEAUTORATER_FACES, a source checkout's _faces/, "
+                         "the per-user data folder; the first that exists wins (see README)")
     ap.add_argument("--face-threshold", type=float, default=0.55, help="min cosine similarity to accept a match; raise if you get wrong names")
     ap.add_argument("--face-margin", type=float, default=0.05,
                     help="a face is only named if the best person beats the runner-up by this much (avoids look-alike mix-ups)")
@@ -914,7 +956,7 @@ def main():
     ap.add_argument("--faces-only", action="store_true", help="shortcut for --no-iqa --no-classify: only detect, cluster and name faces")
     ap.add_argument("--reset-faces", action="store_true",
                     help="forget this photo folder's detected faces and groups in its cache (quality scores and keywords "
-                         "are kept; the faces/ ground truth is never touched)")
+                         "are kept; the _faces/ ground truth is never touched)")
     ap.add_argument("--cluster-threshold", type=float, default=0.6,
                     help="cosine similarity to join an existing face cluster; raise to split more, lower to merge more")
     ap.add_argument("--crops-per-cluster", type=int, default=8, help="sample crops exported per cluster")
@@ -928,7 +970,8 @@ def main():
 
     if not a.folder.is_dir():
         sys.exit(f"Not a folder: {a.folder}")
-    paths = find_images(a.folder, a.recursive, a.raw)
+    faces_dir, faces_how, faces_others = resolve_faces_dir(a.folder, a.faces_dir)   # one ground truth for all scans
+    paths = find_images(a.folder, a.recursive, a.raw, exclude=[faces_dir])
     if not paths:
         sys.exit("No images found.")
     if a.limit:
@@ -973,9 +1016,6 @@ def main():
     if changed:
         print(f"{changed} modified image(s): old results dropped, will be re-analysed")
 
-    # the single ground truth for faces, shared by every photo folder you process
-    faces_dir = a.faces_dir or default_faces_dir()
-
     if a.faces is None:  # not decided on the command line
         a.faces = True
         if first_run_without_persons(cache, faces_dir):
@@ -983,6 +1023,11 @@ def main():
                 a.iqa = a.classify = False  # faces-only
             else:
                 a.faces = False
+    if a.faces:
+        print(f"Faces folder: {faces_dir} ({faces_how})")
+        for other, how in faces_others:
+            print(f"  NOTE: another _faces folder exists and is NOT used: {other} ({how}). "
+                  "Move its named folders into the one above if they hold people you have named.", file=sys.stderr)
 
     if a.iqa:
         if cache["max_side"] is not None and cache["max_side"] != a.max_side and cache["scores"]:

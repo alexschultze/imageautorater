@@ -100,7 +100,7 @@ def stubbed(monkeypatch):
 @pytest.fixture
 def cli(stubbed, tmp_path, monkeypatch):
     """Run the real command line with the stand-in models; returns (stdout, results dict of the photo folder)."""
-    faces_dir = tmp_path / "faces"
+    faces_dir = tmp_path / "_faces"
 
     def run(photo_folder: Path, *args):
         argv = ["imageautorater-rate", str(photo_folder), "--faces-dir", str(faces_dir), *args]

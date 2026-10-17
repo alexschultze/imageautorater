@@ -8,21 +8,6 @@ import imageautorater.gallery as gal
 import imageautorater.pipeline as pl
 
 
-def test_default_faces_dir_prefers_env_then_checkout_then_user_data(monkeypatch, tmp_path):
-    monkeypatch.setenv("IMAGEAUTORATER_FACES", str(tmp_path / "f"))
-    assert pl.default_faces_dir() == tmp_path / "f"
-    monkeypatch.delenv("IMAGEAUTORATER_FACES")
-    repo = pl.Path(pl.__file__).resolve().parents[2]
-    expected = repo / "faces" if (repo / "pyproject.toml").is_file() else None
-    if expected:                                   # running from a source checkout (CI, development)
-        assert pl.default_faces_dir() == expected
-    monkeypatch.setattr(pl, "__file__", str(tmp_path / "site-packages" / "imageautorater" / "pipeline.py"))
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
-    assert "imageautorater" in pl.default_faces_dir().parts   # installed package: per-user data folder, never site-packages
-    assert "site-packages" not in pl.default_faces_dir().parts
-
-
 def test_preset_follows_the_hardware_and_models_override_it(stubbed, tmp_path, monkeypatch, capsys):
     seen = {}
 
