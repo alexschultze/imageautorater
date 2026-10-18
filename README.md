@@ -231,6 +231,17 @@ By hand: `uv pip install --reinstall torch torchvision --torch-backend=auto`, th
 
 Everything already scored stays in the cache, so after fixing, run the same command again and only the missing parts are done. In the log, a model reported as `cached` was scored by an earlier run and is not computed again.
 
+**Damaged photos (`broken data stream when reading image file`).** A truncated or corrupt JPEG cannot be decoded. The photo is skipped for every model, remembered in the cache and listed in `iqa_results.json` under `unreadable` (the log shows a NOTE with the first few). It is not tried again on later runs until the file changes, and it does not count against a model. Only damaged files are remembered: file system and network errors (permission, connection lost) are not, so a dropped connection never blacklists a good photo. A "Corrupt EXIF data" warning only means a damaged metadata block; the picture still loads and is scored.
+
+**"Access is denied" when saving on a NAS or synced folder.** Every file the program writes (the cache `iqa_scores.json`, the results, sidecars) is written next to the target and then renamed over it. On a network share that rename can fail while another program has the target open (a sync client, an antivirus scanner, the search indexer, another PC) or because the share allows writing but not renaming over a file. The program therefore:
+
+- retries a few times with growing pauses (most locks are brief), then overwrites the file in place (caches and sidecars only; **photos are never overwritten in place**),
+- never stops a finished run because of it: if the share still refuses, the results stay in memory, the save is retried, and at the end a local copy is kept in `%LOCALAPPDATA%\imageautorater\recovery\` and listed in the ATTENTION block,
+- saves progress at most once a minute (the cache can be tens of megabytes) and also on Ctrl+C or a crash,
+- uses a leftover `iqa_scores.json.tmp` from an unfinished save automatically at the next start when it is newer than the cache, so **do not delete that file**.
+
+If it keeps happening, find what holds the file (Resource Monitor, Associated Handles), exclude `iqa_*.json` from the antivirus or sync client, or check that your account may delete and rename files on the share.
+
 **It is slow.** Every model reads and decodes every photo, and decoding a large JPEG (about 24 megapixels) takes roughly half a second of CPU, which is often more than the model itself on a GPU. The next photos are decoded in the background while a model works (`--io-threads N`, default 4; more helps on a PC with many cores and on a network share). Fewer models help most. `maniqa` is deliberately not in any preset: on a 6 GB GPU it took about 4.5 s per photo, more than all the other models together (add it yourself with `--models` if you want it). Start with `--limit 50` to measure, then multiply.
 
 **A big folder on a network share (NAS) is slow to start.** The folder is read with directory listings, which is fast even for tens of thousands of photos (35,000 photos in about 10 seconds on a NAS). The progress lines `[mm:ss]` show every phase.

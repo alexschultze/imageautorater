@@ -31,6 +31,7 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
 
+from imageautorater.fileio import replace_file
 from imageautorater.metadata import (ImageMeta, apply_meta, iter_meta, keyword_list, parse_xmp, previous_auto_keywords,
                                      render_xmp)
 from imageautorater.pipeline import CACHE_NAME, fingerprint, load_cache, save_cache
@@ -372,12 +373,16 @@ def main(argv=None):
             tmp = img.with_name(img.name + ".tmp")
             tmp.write_bytes(new)
             os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))   # keep the modified time
-            os.replace(tmp, img)
+            replace_file(tmp, img, allow_copy=False)   # retried; never an in-place overwrite of a photo
             if cache is not None and cache["files"].get(rel) == old_fp:
                 cache["files"][rel] = fingerprint(img)   # the pixels did not change: keep its scores valid
             done += 1
         except (Skip, OSError) as e:
             failed.append((rel, str(e)))
+            try:   # the original is untouched; do not leave a half-finished copy beside it
+                (img.with_name(img.name + ".tmp")).unlink(missing_ok=True)
+            except OSError:
+                pass
     if cache is not None:
         save_cache(cache_path, cache)
     print(f"Updated {done} image files." + (f" {len(failed)} failed:" if failed else ""))

@@ -39,6 +39,8 @@ import sys
 import time
 from pathlib import Path
 
+from imageautorater.fileio import recovery_copy, user_data_dir, write_text_atomic
+
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
 RAW_EXT = {".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef", ".srw"}
 CACHE_NAME = "iqa_scores.json"
@@ -124,6 +126,7 @@ def new_cache():
     return {"version": 3, "max_side": None, "models": {}, "scores": {}, "files": {},
             "clip_model": None, "clip": {}, "clip_text": None, "faces": {}, "gallery": {},
             "clusters_next": 1,
+            "unreadable": {},   # "<relpath>" -> why the photo is damaged; skipped until the file changes
             # "<relpath>#<face index>" -> name (placed in a named folder) or None (placed in a _folder = not a person)
             "face_labels": {}}
 
@@ -139,29 +142,82 @@ def backup_file(path: Path):
     return dst
 
 
+def _read_cache_file(p: Path):
+    """The parsed cache file, or None when it is missing or unreadable."""
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 def load_cache(path: Path):
-    """Load the persistent cache. An unreadable cache is backed up, never silently discarded."""
+    """Load the persistent cache. An unreadable cache is backed up, never silently discarded. A leftover .tmp file from a
+    save that could not finish (locked file on a share, crash) holds the newest complete data and is used when it is
+    newer than the cache itself."""
     cache = new_cache()
-    if path.exists():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            for k in cache:
-                if k in data:
-                    cache[k] = data[k]
-        except (json.JSONDecodeError, OSError, AttributeError):
-            print(f"WARNING: could not read {path.name}; moved to {backup_file(path).name}", file=sys.stderr)
-            return new_cache()
+    tmp = path.with_name(path.name + ".tmp")
+    main, spare = (_read_cache_file(p) if p.exists() else None for p in (path, tmp))
+    data = main
+    if spare is not None and (main is None or tmp.stat().st_mtime >= path.stat().st_mtime):
+        data = spare
+        print(f"Recovered the cache from {tmp.name}, left behind by a save that could not finish.", file=sys.stderr)
+    if data is None and path.exists():
+        print(f"WARNING: could not read {path.name}; moved to {backup_file(path).name}", file=sys.stderr)
+    if data is not None:
+        for k in cache:
+            if k in data:
+                cache[k] = data[k]
     n = sum(len(v) for v in cache["scores"].values())
     if n:
         print(f"Loaded cache: {len(cache['scores'])} models, {n} scores")
     return cache
 
 
-def save_cache(path: Path, cache):
-    """Atomic write so an interruption can't corrupt the cache."""
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(cache, indent=1), encoding="utf-8")
-    os.replace(tmp, path)
+_cache_error = None     # why the last cache save failed (None = it worked)
+_last_autosave = 0.0
+_ACTIVE = {}            # the cache of the running scan, so a crash or Ctrl+C can still save it
+
+
+def save_cache(path: Path, cache) -> bool:
+    """Save the cache. Never raises: on a network share or synced folder the file can be locked for a while (sync client,
+    antivirus, another PC), so the write is retried, then done in place, and if the share still refuses the problem is
+    reported while the results stay in memory. Compact JSON: embeddings make the cache large, and a NAS is slow."""
+    global _cache_error, _last_autosave
+    try:
+        write_text_atomic(path, json.dumps(cache, separators=(",", ":")))
+    except OSError as err:
+        _cache_error = str(err)
+        print(f"WARNING: could not save {path.name} ({err}). The results stay in memory; saving is tried again.", file=sys.stderr)
+        return False
+    _cache_error = None
+    _last_autosave = time.time()
+    return True
+
+
+def autosave(path: Path, cache, every=60):
+    """Keep progress if the run is interrupted, but at most once a minute: the cache can be tens of megabytes."""
+    if time.time() - _last_autosave >= every:
+        save_cache(path, cache)
+
+
+def finalize_cache(path: Path, cache):
+    """Last chance at the end of a run when the previous save failed: try once more, else keep a local recovery copy and
+    list the problem, so a finished run is never lost."""
+    if _cache_error is None:
+        return
+    if save_cache(path, cache):
+        log(f"{path.name} was saved after all")
+        return
+    err = _cache_error
+    try:
+        rec = recovery_copy(path.name, json.dumps(cache, separators=(",", ":")))
+    except OSError:
+        rec = None
+    note_problem(f"{path.name} could not be saved to {path.parent} ({err})"
+                 + (f"; a copy of everything scored is in {rec}" if rec else ""),
+                 "close whatever has the file open (the sync client, antivirus, another PC running this tool), or check the "
+                 "share's permissions, then run the same command again; it continues from the saved copy")
 
 
 def fingerprint(p: Path):
@@ -233,6 +289,26 @@ def report_problems():
         print(f"  - {what}" + (f"\n      fix: {fix}" if fix else ""))
     print("Run the same command again after fixing; everything already done stays in the cache.")
     print("=" * 100 + "\n")
+
+
+def is_damaged_image(err) -> bool:
+    """True when a load error means the FILE is damaged (truncated, 'broken data stream', not an image), false for
+    errors of the file system or network (permission, connection lost, ...), which carry an errno and may pass later.
+    Only damaged photos are remembered as unreadable; a dropped connection must never blacklist a good photo."""
+    return not (isinstance(err, OSError) and err.errno not in (None, 0))
+
+
+def mark_unreadable(cache, rel, err):
+    cache["unreadable"][rel] = f"{type(err).__name__}: {str(err)[:80]}"
+
+
+def report_unreadable(cache, rels):
+    bad = {k: v for k, v in cache["unreadable"].items() if k in rels}
+    if bad:
+        first = ", ".join(list(bad)[:5])
+        log(f"NOTE: {len(bad)} photo(s) could not be read (damaged or truncated files) and were skipped: {first}"
+            + (" ..." if len(bad) > 5 else "") + f". All of them are listed in {RESULTS_NAME} under 'unreadable'; they are "
+            "tried again only after the file changes.")
 
 
 PKG_RESOURCES_FIX = 'uv pip install "setuptools<82"   (setuptools 82+ removed pkg_resources, which the CLIP package needs)'
@@ -312,7 +388,7 @@ def run_models(folder, paths, models, device, max_side, cache, cache_path, io_th
 
     for mi, name in enumerate(models, 1):
         done = cache["scores"].setdefault(name, {})
-        todo = [p for p in paths if rel[p] not in done]
+        todo = [p for p in paths if rel[p] not in done and rel[p] not in cache["unreadable"]]
         if not todo and name in cache["models"]:
             print(f"[{mi}/{len(models)}] {name}: cached")
             continue
@@ -333,8 +409,10 @@ def run_models(folder, paths, models, device, max_side, cache, cache_path, io_th
         t0 = time.time()
         for n, (p, img, load_err) in enumerate(prefetched(todo, lambda q: load_image(q, max_side), io_threads), 1):
             status(f"[{mi}/{len(models)}] {name}  {n}/{len(todo)}  {fmt_eta(time.time() - t0, n, len(todo))}  {p.name}")
-            if n % 25 == 0:
-                save_cache(cache_path, cache)  # keep progress if interrupted
+            autosave(cache_path, cache)   # keep progress if interrupted (at most once a minute)
+            if load_err and is_damaged_image(load_err):
+                mark_unreadable(cache, rel[p], load_err)   # the photo is at fault, not the model: no strike against it
+                continue
             try:
                 if load_err:
                     raise load_err
@@ -409,11 +487,10 @@ def write_results_json(path: Path, args, per_image: dict, used: list, cache: dic
         "mode": args.mode,
         "max_side": args.max_side,
         "models": {m: cache["models"][m] for m in used},  # score range / direction used for stars
+        "unreadable": cache.get("unreadable", {}),
         "images": images,
     }
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(out, indent=1), encoding="utf-8")
-    os.replace(tmp, path)
+    write_text_atomic(path, json.dumps(out, indent=1))
 
 
 # --------------------------------------------------------------------------------------
@@ -731,11 +808,7 @@ SAME_FACE = 0.9  # cosine similarity above which two embeddings count as the sam
 
 def user_data_faces_dir() -> Path:
     """%LOCALAPPDATA%\\imageautorater\\_faces on Windows, ~/.local/share/imageautorater/_faces elsewhere."""
-    if os.name == "nt":
-        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-    else:
-        base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
-    return base / "imageautorater" / "_faces"
+    return user_data_dir() / "_faces"
 
 
 def resolve_faces_dir(photo_folder: Path, explicit: "Path | None" = None):
@@ -806,9 +879,12 @@ def load_records(faces_dir: Path) -> dict:
 
 def save_records(faces_dir: Path, records: dict):
     if faces_dir.is_dir():
-        tmp = faces_dir / (RECORDS_FILE + ".tmp")
-        tmp.write_text(json.dumps(records), encoding="utf-8")
-        os.replace(tmp, faces_dir / RECORDS_FILE)
+        try:
+            write_text_atomic(faces_dir / RECORDS_FILE, json.dumps(records))
+        except OSError as err:
+            print(f"WARNING: could not save {RECORDS_FILE} in {faces_dir} ({err})", file=sys.stderr)
+            note_problem(f"{RECORDS_FILE} could not be saved in {faces_dir} ({err}): new face crops are not recorded yet",
+                         "close whatever has the file open (sync client, antivirus), then run the same command again")
 
 
 STATE_FILE = ".state.json"
@@ -836,9 +912,10 @@ def person_allocator(faces_dir: Path):
 
     def save():
         faces_dir.mkdir(parents=True, exist_ok=True)
-        tmp = faces_dir / (STATE_FILE + ".tmp")
-        tmp.write_text(json.dumps({"next_person": box[0]}), encoding="utf-8")
-        os.replace(tmp, state)
+        try:
+            write_text_atomic(state, json.dumps({"next_person": box[0]}))
+        except OSError as err:
+            print(f"WARNING: could not save {STATE_FILE} in {faces_dir} ({err})", file=sys.stderr)
 
     return alloc, save
 
@@ -1129,11 +1206,14 @@ def run_content(folder, paths, rel, cache, cache_path, a, faces_dir):
 
     fid = folder_id(folder)
 
-    todo = [p for p in paths
-            if (state["clip_ok"] and rel[p] not in cache["clip"]) or (state["faces_ok"] and rel[p] not in cache["faces"])]
+    todo = [p for p in paths if rel[p] not in cache["unreadable"]
+            and ((state["clip_ok"] and rel[p] not in cache["clip"]) or (state["faces_ok"] and rel[p] not in cache["faces"]))]
     t0, last_save = time.time(), time.time()
     for n, (p, img, load_err) in enumerate(prefetched(todo, lambda q: load_image(q, a.content_max_side), a.io_threads), 1):
         status(f"[content] {n}/{len(todo)}  {fmt_eta(time.time() - t0, n, len(todo))}  {p.name}")
+        if load_err and is_damaged_image(load_err):
+            mark_unreadable(cache, rel[p], load_err)
+            continue
         try:
             if load_err:
                 raise load_err
@@ -1221,7 +1301,7 @@ def ask_faces_first(faces_dir):
         print("Please answer F or P (Q to quit).")
 
 
-def main():
+def _main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("folder", type=Path)
     ap.add_argument("--preset", choices=["auto", "cpu", "gpu", "all"], default="auto",
@@ -1288,9 +1368,13 @@ def main():
     global _T0
     _T0 = time.time()   # the [mm:ss] stamps count from here
     PROBLEMS.clear()
+    global _cache_error
+    _cache_error = None
+    _ACTIVE.clear()
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")   # Windows without developer mode: harmless, very noisy
     import warnings
     warnings.filterwarnings("ignore", message=".*torch.jit.load.*")
+    warnings.filterwarnings("ignore", message=".*Corrupt EXIF data.*")   # a damaged EXIF block; the picture still loads
     log(f"imageautorater {__version__}: nothing is installed unless you agree to the GPU fix. Normal reasons to wait: reading "
         "a big folder, loading PyTorch, and (first run only) downloading model weights, which are cached in your user profile.")
     if a.iqa or a.classify or a.faces is not False:
@@ -1330,6 +1414,7 @@ def main():
     if a.fresh and cache_path.exists():
         print(f"--fresh: previous cache kept as {backup_file(cache_path).name}")
     cache = load_cache(cache_path)
+    _ACTIVE.update(path=cache_path, cache=cache)
     if a.reset_faces:
         cache["faces"], cache["face_labels"], cache["clusters_next"] = {}, {}, 1
         print("--reset-faces: detected faces and groups cleared from this photo folder's cache")
@@ -1351,6 +1436,7 @@ def main():
                 sc.pop(rel[p], None)
             cache["clip"].pop(rel[p], None)
             cache["faces"].pop(rel[p], None)
+            cache["unreadable"].pop(rel[p], None)
             for key in [k for k in cache["face_labels"] if k.rpartition("#")[0] == rel[p]]:
                 del cache["face_labels"][key]  # face indexes of a modified image no longer line up
         cache["files"][rel[p]] = fp
@@ -1392,6 +1478,7 @@ def main():
     # Combine every model in the cache (honouring --exclude), not just this run's --models,
     # so a partial run never shrinks the ratings built up earlier.
     used = [m for m in cache["scores"] if cache["scores"][m] and m in cache["models"] and m not in set(a.exclude)]
+    finalize_cache(cache_path, cache)
     if not used and not content:
         report_problems()   # the reasons come first: they explain why nothing was scored
         sys.exit("Nothing was scored.")
@@ -1413,7 +1500,17 @@ def main():
             per_image.setdefault(k, {})[m] = (stars[k], s)
 
     json_path = a.json_out or (a.folder / RESULTS_NAME)
-    write_results_json(json_path, a, per_image, used, cache, content)
+    try:
+        write_results_json(json_path, a, per_image, used, cache, content)
+    except OSError as err:   # the share refuses the file: keep the results locally instead of losing them
+        rec = user_data_dir() / "recovery" / RESULTS_NAME
+        rec.parent.mkdir(parents=True, exist_ok=True)
+        write_results_json(rec, a, per_image, used, cache, content)
+        note_problem(f"{json_path.name} could not be written to {json_path.parent} ({err}); it is in {rec}",
+                     "close whatever has the file open, then run the same command again")
+        json_path = rec
+    finalize_cache(cache_path, cache)
+    report_unreadable(cache, set(rel.values()))
     log(f"Wrote combined results ({len(set(per_image) | set(content))} images): {json_path}")
 
     named = sum(1 for e in content.values() for pr in e.get("people", []) if pr.get("name"))
@@ -1425,6 +1522,26 @@ def main():
     print(f'  imageautorater-write-xmp  "{a.folder}"    (XMP sidecar files)')
     print(f'  imageautorater-write-exif "{a.folder}"    (inside JPEG/PNG files; asks first, --backup DIR available)')
     print(f'  imageautorater-gallery    "{a.folder}"    (browse the ranking)')
+
+
+def main():
+    try:
+        _main()
+    except KeyboardInterrupt:
+        _save_on_exit("Interrupted")
+        print("Run the same command again to continue; everything saved so far is kept.", file=sys.stderr)
+        sys.exit(130)
+    except Exception:
+        _save_on_exit("The run stopped with an error")
+        raise
+
+
+def _save_on_exit(why):
+    """Ctrl+C or a crash must not throw away what has been scored: write the cache once more."""
+    if _ACTIVE:
+        status(None)
+        ok = save_cache(_ACTIVE["path"], _ACTIVE["cache"])
+        print(f"\n{why}. " + ("The progress was saved." if ok else "The progress could NOT be saved (see above)."), file=sys.stderr)
 
 
 if __name__ == "__main__":

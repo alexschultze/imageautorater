@@ -9,11 +9,11 @@ To store the data inside the image files instead, use imageautorater-write-exif.
 """
 import argparse
 import json
-import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from imageautorater.fileio import write_bytes_atomic
 from imageautorater.metadata import apply_meta, iter_meta, parse_xmp, render_xmp
 from imageautorater.pipeline import RESULTS_NAME, backup_file
 
@@ -51,6 +51,7 @@ def main(argv=None):
     folder = a.folder.resolve()
     results = load_results(folder, a.results)
     written = unchanged = missing = 0
+    failed = []
     for rel, meta in iter_meta(results):
         img = folder / rel
         if not img.is_file():
@@ -69,14 +70,20 @@ def main(argv=None):
         if new == old:
             unchanged += 1
             continue
-        written += 1
-        if not a.dry_run:
-            tmp = xmp.with_name(xmp.name + ".tmp")
-            tmp.write_bytes(new)
-            os.replace(tmp, xmp)
+        if a.dry_run:
+            written += 1
+            continue
+        try:
+            write_bytes_atomic(xmp, new)
+            written += 1
+        except OSError as err:   # e.g. locked by a sync client: report it, carry on with the others
+            failed.append((xmp, err))
     verb = "would write" if a.dry_run else "wrote"
     print(f"{verb} {written} sidecars, {unchanged} already up to date"
-          + (f", {missing} photos from the results no longer exist" if missing else ""))
+          + (f", {missing} photos from the results no longer exist" if missing else "")
+          + (f", {len(failed)} could not be written" if failed else ""))
+    for xmp, err in failed[:10]:
+        print(f"  {xmp}: {err}", file=sys.stderr)
 
 
 if __name__ == "__main__":
