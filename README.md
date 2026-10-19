@@ -1,6 +1,6 @@
 # imageautorater
 
-Rates a folder of photos and saves the results in a JSON file. **The rating itself writes nothing into or next to your photos.** Storing the results in the photos is a separate, deliberate last step, and a third command builds a web page to browse the ranking.
+Rates a folder of photos and saves the results in a JSON file. **The rating itself writes nothing into or next to your photos** (only files in the photo folder's own `iqa_*.json`, `_faces` and `_gallery` entries; the thumbnails for the gallery are saved while scoring, `--no-thumbs` turns that off). Storing the results in the photos is a separate, deliberate last step, and a third command builds a web page to browse the ranking.
 
 - **Quality:** scored with [pyiqa](https://github.com/chaofengc/IQA-PyTorch) no-reference models, giving 1-5 stars per model.
 - **Image type keywords:** CLIP zero-shot classification (portrait, landscape, food, night, ...).
@@ -108,6 +108,7 @@ Subfolders are included by default (`--no-recursive` for the top folder only). U
 | `--limit 10` | Only process the first 10 images (quick test) |
 | `--max-side 1024` | Downscale before scoring (default: 1024 for the `cpu` preset, 2048 otherwise) |
 | `--mode percentile` | Rank stars within the folder instead of using each model's score range |
+| `--no-thumbs` / `--thumb-size 360` | Do not save the gallery thumbnails while scoring / their size (keep it equal to `imageautorater-gallery`) |
 | `--faces-only` | Only detect, group and name faces |
 | `--no-iqa` / `--no-classify` / `--no-faces` | Turn off one part |
 | `--labels labels.txt` | Own keyword vocabulary, one `label` or `label: prompt` per line |
@@ -121,6 +122,7 @@ Written in the photo folder, never next to the individual photos:
 
 - **`iqa_results.json`**: per image the stars and raw score of every model, the mean stars, the keywords (recognised people first, then image types) and the people found. This is what the other commands read.
 - **`iqa_scores.json`**: the persistent cache (scores, CLIP and face embeddings).
+- **`_gallery\thumbs\`**: the gallery's thumbnails (360 px), saved from the first scoring pass while the downscaled photo is in memory, only for photos that have none yet (`--no-thumbs`, `--thumb-size`). `imageautorater-gallery` re-uses them and makes only the missing ones.
 - **`_faces\`**: crops to name people, by default in a `_faces` folder in the root of the photo folder (see *Naming people*).
 
 ## Saving the results into your photos

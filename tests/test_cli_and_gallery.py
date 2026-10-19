@@ -14,7 +14,7 @@ import imageautorater.pipeline as pl
 def test_preset_follows_the_hardware_and_models_override_it(stubbed, tmp_path, monkeypatch, capsys):
     seen = {}
 
-    def fake_run_models(folder, paths, models, device, max_side, cache, cache_path):
+    def fake_run_models(folder, paths, models, device, max_side, cache, cache_path, thumbs=None):
         seen.update(models=list(models), max_side=max_side)
         for m in models:
             cache["scores"][m] = {"a.png": 50.0}
@@ -238,3 +238,57 @@ def test_photos_are_closed_right_after_reading(tmp_path, monkeypatch):
             kept.append(e)                               # a kept exception keeps its frames alive
         assert opened and all(f.closed for f in opened), p.name
     assert len(opened) == 3
+
+
+class FakeMetric:
+    score_range = "0, 100"
+    lower_better = False
+
+    def __call__(self, t):
+        import torch
+
+        return t.mean().reshape(1) * 100
+
+
+def fake_pyiqa(monkeypatch):
+    import sys
+    import types
+
+    mod = types.ModuleType("pyiqa")
+    mod.create_metric = lambda name, device=None: FakeMetric()
+    monkeypatch.setitem(sys.modules, "pyiqa", mod)
+
+
+def test_thumbnails_are_saved_during_the_first_scoring_pass(tmp_path, monkeypatch):
+    """The scoring loop has the downscaled photo in memory, so missing gallery thumbnails are saved from it, once, and the
+    gallery then finds them (same name) and makes nothing."""
+    from PIL import Image
+
+    fake_pyiqa(monkeypatch)
+    root = tmp_path / "photos"
+    for rel in ("2024/a.png", "2024/sub/b.png"):
+        make_photo(root, rel, "A", size=900)
+    opened = []
+    real = pl.load_image
+    monkeypatch.setattr(pl, "load_image", lambda p, m: (opened.append(p.name), real(p, m))[1])
+    paths = pl.find_images(root, True, False)
+    cache = pl.new_cache()
+    for p in paths:
+        cache["files"][str(p.relative_to(root)).replace("\\", "/")] = pl.fingerprint(p)
+    thumbs = (root / "_gallery" / "thumbs", 360)
+    pl.run_models(root, paths, ["musiq", "topiq_nr"], "cpu", 512, cache, root / "c.json", thumbs=thumbs)
+    made = sorted(thumbs[0].glob("*.jpg"))
+    assert len(made) == 2 and all(max(Image.open(p).size) == 360 for p in made)
+    assert len(opened) == 4                                          # 2 photos x 2 models; the thumbnails cost no extra read
+    stamp = {p.name: p.stat().st_mtime_ns for p in made}
+    pl.run_models(root, paths, ["clipiqa"], "cpu", 512, cache, root / "c.json", thumbs=thumbs)   # a later model: nothing re-made
+    assert {p.name: p.stat().st_mtime_ns for p in thumbs[0].glob("*.jpg")} == stamp
+    (root / pl.RESULTS_NAME).write_text(json.dumps({"models": {"musiq": {"range": [0, 100]}}, "images": {
+        r: {"rating_mean": 3, "models": {"musiq": {"rating": 3, "score": 50.0}}} for r in ("2024/a.png", "2024/sub/b.png")}}))
+    monkeypatch.setattr("sys.argv", ["x", str(root), "--jobs", "1"])
+    gal.main()
+    assert {p.name: p.stat().st_mtime_ns for p in thumbs[0].glob("*.jpg")} == stamp          # the gallery re-used them
+    # a thumbnail size above the scoring size is left to the gallery (it needs the original)
+    other = (tmp_path / "t2", 1000)
+    pl.run_models(root, paths, ["niqe"], "cpu", 512, cache, root / "c.json", thumbs=other)
+    assert not other[0].exists()

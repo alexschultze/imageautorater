@@ -22,14 +22,29 @@ def thumb_file(thumb_dir: Path, rel: str, fp: str, size: int) -> Path:
     return thumb_dir / f"{rel_hash(rel)}_{rel_hash(fp)}_{size}.jpg"
 
 
+def save_thumb(img, dst: Path, size: int):
+    """Write a thumbnail of an already loaded (and possibly already downscaled) PIL image. `img` is not modified."""
+    small = img.copy()
+    small.thumbnail((size, size))
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.name + ".tmp")           # an interrupted run never leaves a half-written thumbnail
+    small.save(tmp, "JPEG", quality=82, optimize=True)
+    os.replace(tmp, dst)
+
+
 def make_thumb(src: Path, dst: Path, size: int):
     from imageautorater.pipeline import load_image
 
-    img = load_image(src, size)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_name(dst.name + ".tmp")           # an interrupted run never leaves a half-written thumbnail
-    img.save(tmp, "JPEG", quality=82, optimize=True)
-    os.replace(tmp, dst)
+    save_thumb(load_image(src, size), dst, size)
+
+
+def existing_names(thumb_dir: Path) -> set:
+    """File names already in the thumbnail folder, from one directory listing (not one request per photo)."""
+    try:
+        with os.scandir(thumb_dir) as it:
+            return {e.name for e in it}
+    except OSError:
+        return set()
 
 
 def _job(args):

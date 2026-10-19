@@ -251,7 +251,9 @@ def config_range(name):
     return parse_range(DEFAULT_CONFIGS.get(name, {}).get("score_range"))
 
 
-def run_models(folder, paths, models, device, max_side, cache, cache_path):
+def run_models(folder, paths, models, device, max_side, cache, cache_path, thumbs=None):
+    """thumbs = (folder, size): gallery thumbnails that do not exist yet are saved from the first scoring pass, which has
+    the downscaled photo in memory anyway, so the gallery needs no second read of the originals."""
     ensure_imported("pyiqa", "Loading pyiqa (nothing is installed; this can take a while on the first start)")
     import numpy as np
     import pyiqa
@@ -260,6 +262,18 @@ def run_models(folder, paths, models, device, max_side, cache, cache_path):
     dev = pick_device(device)
     print(f"device: {dev}   models: {len(models)}   images: {len(paths)}")
     rel = {p: str(p.relative_to(folder)).replace("\\", "/") for p in paths}
+    pending, made = {}, 0                      # relpath -> thumbnail file still to make
+    if thumbs and (not max_side or thumbs[1] <= max_side):   # a thumbnail must not be bigger than the scored image
+        from imageautorater.gallery_thumbs import existing_names, thumb_file
+
+        have = existing_names(thumbs[0])
+        for p in paths:
+            fp = cache["files"].get(rel[p])
+            dst = thumb_file(thumbs[0], rel[p], fp, thumbs[1]) if fp else None
+            if dst is not None and dst.name not in have:
+                pending[rel[p]] = dst
+        if pending:
+            print(f"thumbnails: {len(pending)} missing, made from the first scoring pass into {thumbs[0]}")
 
     for mi, name in enumerate(models, 1):
         done = cache["scores"].setdefault(name, {})
@@ -287,6 +301,15 @@ def run_models(folder, paths, models, device, max_side, cache, cache_path):
                 save_cache(cache_path, cache)  # keep progress if interrupted
             try:
                 img = load_image(p, max_side)
+                dst = pending.pop(rel[p], None)
+                if dst is not None:
+                    try:
+                        from imageautorater.gallery_thumbs import save_thumb
+
+                        save_thumb(img, dst, thumbs[1])
+                        made += 1
+                    except Exception as e:     # not needed for the rating: the gallery makes it later
+                        print(f"    no thumbnail for {p.name}: {str(e)[:80]}", file=sys.stderr)
                 t = torch.from_numpy(np.array(img)).permute(2, 0, 1).float().div(255).unsqueeze(0)   # np.array copies: writable
                 with torch.no_grad():
                     s = float(metric(t.to(dev)).item())
@@ -300,7 +323,8 @@ def run_models(folder, paths, models, device, max_side, cache, cache_path):
                     print(f"    {name}: giving up", file=sys.stderr)
                     break
         status(None)
-        print(f"[{mi}/{len(models)}] {name}: done, {len(done)}/{len(paths)} scored in {time.time() - t0:.0f}s")
+        print(f"[{mi}/{len(models)}] {name}: done, {len(done)}/{len(paths)} scored in {time.time() - t0:.0f}s"
+              + (f", {made} thumbnails saved so far" if made else ""))
         save_cache(cache_path, cache)
 
         del metric
@@ -1084,6 +1108,10 @@ def main():
     ap.add_argument("--device", help="cuda / cpu (default: auto)")
     ap.add_argument("--max-side", type=int, default=None,
                     help="downscale long side before scoring; 0 = full size (default: 1024 for the cpu preset, 2048 otherwise)")
+    ap.add_argument("--thumbs", action=argparse.BooleanOptionalAction, default=True,
+                    help="save the gallery thumbnails (<folder>/_gallery/thumbs) while scoring, from the photo already "
+                         "loaded; photos that have none yet (default on)")
+    ap.add_argument("--thumb-size", type=int, default=360, help="thumbnail size in pixels (default 360; must match imageautorater-gallery)")
     ap.add_argument("--json-out", type=Path, help=f"combined results JSON (default: <folder>/{RESULTS_NAME})")
     ap.add_argument("--fresh", action="store_true", help="start a new score cache (the old one is kept as .bak)")
     ap.add_argument("--iqa", action=argparse.BooleanOptionalAction, default=True,
@@ -1212,7 +1240,10 @@ def main():
         cache["max_side"] = a.max_side
         log(f"Scoring quality: {len(models)} models ({', '.join(models)}) on {len(paths)} photos. "
             "Progress and time left are shown per model; you can stop with Ctrl+C and continue later.")
-        run_models(a.folder, paths, models, a.device, a.max_side, cache, cache_path)
+        from imageautorater.gallery_thumbs import GALLERY_DIR_NAME, THUMB_DIR_NAME
+
+        run_models(a.folder, paths, models, a.device, a.max_side, cache, cache_path,
+                   thumbs=(a.folder / GALLERY_DIR_NAME / THUMB_DIR_NAME, a.thumb_size) if a.thumbs else None)
         save_cache(cache_path, cache)
 
     # content analysis: keywords + people
