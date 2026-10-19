@@ -205,3 +205,36 @@ def test_everything_generated_is_in_the_gallery_folder_and_never_rated(photo_fol
     assert made == {"a", "b", "top.png", "iqa_results.json", "_gallery"}          # nothing else was added to the photo folder
     assert (photo_folder / "_gallery" / "gallery.html").is_file()
     assert [p.name for p in pl.find_images(photo_folder, True, False)] == ["1.png", "2.png", "3.png", "top.png"]   # thumbnails are not photos
+
+
+def test_photos_are_closed_right_after_reading(tmp_path, monkeypatch):
+    """A photo on a network share must not stay open: every open() made while loading is closed before load_image returns,
+    also for damaged files."""
+    import builtins
+
+    from PIL import Image
+
+    good = tmp_path / "ok.jpg"
+    Image.new("RGB", (400, 300), (1, 2, 3)).save(good)
+    truncated = tmp_path / "trunc.jpg"
+    truncated.write_bytes(good.read_bytes()[:300])
+    junk = tmp_path / "junk.jpg"
+    junk.write_bytes(b"nope")
+    opened = []
+    real_open = builtins.open
+
+    def spy(file, *a, **k):
+        f = real_open(file, *a, **k)
+        if str(file).startswith(str(tmp_path)):
+            opened.append(f)
+        return f
+
+    monkeypatch.setattr(builtins, "open", spy)
+    for p in (good, truncated, junk):
+        kept = []
+        try:
+            pl.load_image(p, 100)
+        except Exception as e:
+            kept.append(e)                               # a kept exception keeps its frames alive
+        assert opened and all(f.closed for f in opened), p.name
+    assert len(opened) == 3

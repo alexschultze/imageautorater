@@ -32,6 +32,7 @@ Examples:
 """
 import argparse
 import gc
+import io
 import json
 import os
 import re
@@ -102,7 +103,12 @@ def load_image(path: Path, max_side: int):
         with rawpy.imread(str(path)) as raw:
             img = Image.fromarray(raw.postprocess(use_camera_wb=True, half_size=True))
     else:
-        img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+        # Read the file in one go and close it at once (a photo on a network share must not stay open while it is
+        # decoded or while an exception travels up); then decode from memory.
+        with open(path, "rb") as f:
+            data = f.read()
+        with Image.open(io.BytesIO(data)) as im:
+            img = ImageOps.exif_transpose(im).convert("RGB")
     if max_side and max(img.size) > max_side:
         img.thumbnail((max_side, max_side), Image.LANCZOS)
     return img
