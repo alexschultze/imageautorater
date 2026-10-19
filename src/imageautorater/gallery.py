@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build a browsable web page from the results of imageautorater-rate.
 
-  imageautorater-gallery "C:\\Photos"            # writes <folder>\\gallery.html (+ gallery_data\\), opens nothing
+  imageautorater-gallery "C:\\Photos"            # writes <folder>\\_gallery\\gallery.html, opens nothing
   imageautorater-gallery "C:\\Photos" --open     # ... and opens it in your browser
 
 The page shows the best photos per folder (by default per top-level folder, e.g. per year, 50 each). In the page you
@@ -22,7 +22,7 @@ import webbrowser
 from pathlib import Path
 from urllib.parse import quote
 
-from imageautorater.gallery_thumbs import THUMB_DIR_NAME, default_jobs, ensure_thumbs, make_thumb, thumb_file  # noqa: F401
+from imageautorater.gallery_thumbs import GALLERY_DIR_NAME, THUMB_DIR_NAME, default_jobs, ensure_thumbs, make_thumb, thumb_file  # noqa: F401
 from imageautorater.pipeline import RESULTS_NAME, fingerprint
 
 BROWSER_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}  # shown directly in the large view
@@ -150,10 +150,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("folder", type=Path, help="photo folder that holds iqa_results.json")
     ap.add_argument("--results", type=Path, help=f"results file (default: <folder>/{RESULTS_NAME})")
-    ap.add_argument("--out", type=Path, help="output page (default: <folder>/gallery.html)")
+    ap.add_argument("--out", type=Path, help=f"output page (default: <folder>/{GALLERY_DIR_NAME}/gallery.html)")
     ap.add_argument("--top", type=int, default=50, help="photos shown per folder before 'Show more' (default 50)")
     ap.add_argument("--thumb-size", type=int, default=360, help="thumbnail size in pixels (default 360)")
-    ap.add_argument("--thumb-dir", type=Path, help=f"folder for the thumbnails (default: <folder>/{THUMB_DIR_NAME})")
+    ap.add_argument("--thumb-dir", type=Path, help=f"folder for the thumbnails (default: <folder>/{GALLERY_DIR_NAME}/{THUMB_DIR_NAME})")
     ap.add_argument("--jobs", type=int, default=default_jobs(), help="parallel processes for thumbnails (default %(default)s)")
     ap.add_argument("--thumbs-only", action="store_true", help="only make the thumbnails, do not write the page")
     ap.add_argument("--no-thumbs", action="store_true", help="use the original files as thumbnails (slow for big photos)")
@@ -168,8 +168,11 @@ def main():
     results = json.loads(results_path.read_text(encoding="utf-8"))
     if not results.get("images"):
         sys.exit("The results file contains no images.")
-    out = (a.out or folder / "gallery.html").resolve()
-    thumb_dir = (a.thumb_dir or folder / THUMB_DIR_NAME).resolve()
+    out = (a.out or folder / GALLERY_DIR_NAME / "gallery.html").resolve()
+    thumb_dir = (a.thumb_dir or out.parent / THUMB_DIR_NAME).resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if (folder / ".iqa_thumbs").is_dir():
+        print(f"NOTE: the old thumbnail folder {folder / '.iqa_thumbs'} is no longer used and can be deleted.")
     if a.thumbs_only and a.no_thumbs:
         sys.exit("--thumbs-only and --no-thumbs exclude each other.")
 

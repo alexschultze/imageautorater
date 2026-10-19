@@ -7,7 +7,8 @@ from pathlib import Path
 
 from imageautorater.pipeline import status
 
-THUMB_DIR_NAME = ".iqa_thumbs"
+GALLERY_DIR_NAME = "_gallery"        # everything the gallery generates goes in here, inside the photo folder
+THUMB_DIR_NAME = "thumbs"            # inside GALLERY_DIR_NAME
 
 
 def default_jobs() -> int:

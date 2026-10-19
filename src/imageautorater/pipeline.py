@@ -48,7 +48,7 @@ _STAMPS = {}   # str(path) -> "size:mtime" read from the directory listing, so n
 
 
 def find_images(folder: Path, recursive: bool, include_raw: bool, exclude=(), progress=None):
-    """Photos in a folder. Never returned: anything inside a hidden (dot) folder such as the gallery's .iqa_thumbs, or in
+    """Photos in a folder. Never returned: anything inside a hidden (dot) folder, in the gallery's _gallery folder, or in
     any _faces folder, and anything inside one of the `exclude` folders (e.g. a custom faces folder in the photo folder).
     progress(n_entries_looked_at, n_photos_found) is called every 500 entries so a big folder shows life signs.
 
@@ -76,7 +76,7 @@ def find_images(folder: Path, recursive: bool, include_raw: bool, exclude=(), pr
                 try:
                     if entry.is_dir():
                         name = entry.name
-                        if (recursive and not name.startswith(".") and name != "_faces"
+                        if (recursive and not name.startswith(".") and name not in ("_faces", "_gallery")
                                 and os.path.normcase(os.path.abspath(entry.path)) not in skip):
                             stack.append(entry.path)
                         continue

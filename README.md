@@ -150,7 +150,7 @@ There is **one ground truth for faces**: a single `_faces\` folder, shared by ev
 5. **`_faces` in the repository**, when you run from a source checkout (git-ignored).
 6. **The per-user data folder**: `%LOCALAPPDATA%\imageautorater\_faces` on Windows, `~/.local/share/imageautorater/_faces` elsewhere. Also used when the scanned folder cannot be written to.
 
-For 3 to 6 the first folder that already exists is used, and any other `_faces` folder that exists is reported as *not used*, so a split ground truth never goes unnoticed. The scan prints `Faces folder: ... (how it was found)`, and the first-run question names the folder it looked in. Photos are never searched in a `_faces` folder (at any depth) or in a hidden folder such as the gallery's `.iqa_thumbs`, so the crops are never rated as photos. A custom faces folder inside the photo folder is excluded too.
+For 3 to 6 the first folder that already exists is used, and any other `_faces` folder that exists is reported as *not used*, so a split ground truth never goes unnoticed. The scan prints `Faces folder: ... (how it was found)`, and the first-run question names the folder it looked in. Photos are never searched in a `_faces` folder (at any depth) or in a hidden folder or the gallery's `_gallery` folder, so the crops are never rated as photos. A custom faces folder inside the photo folder is excluded too.
 
 ```
 _faces\
@@ -193,9 +193,9 @@ With no options the script uses `gpu` when it finds a GPU and `cpu` otherwise (f
 imageautorater-gallery "C:\Photos" --open
 ```
 
-It reads `iqa_results.json` and writes `gallery.html` plus a `gallery_data\` folder next to it (open the page with a double click; it needs no server; keep the page, `gallery_data\` and the photos in place, since the page loads the data of a folder when you select it and links to the originals by relative path). Photos are never modified.
+It reads `iqa_results.json` and puts **everything it generates into one subfolder of the photo folder, `_gallery\`**: `gallery.html` (the page), `gallery_data\` (its data) and `thumbs\` (the thumbnails). Open `_gallery\gallery.html` with a double click; it needs no server. `imageautorater-rate` never scans `_gallery`, and deleting the folder removes everything the gallery made. Keep the folder inside the photo folder, since the page links to the originals by relative path. Photos are never modified.
 
-- **Thumbnails:** one small JPEG (360 px, `--thumb-size`) per photo, made once for all photos, in parallel (`--jobs`), in `.iqa_thumbs\` (`--thumb-dir`). Re-runs only make the missing ones. `--thumbs-only` makes them without writing the page.
+- **Thumbnails:** one small JPEG (360 px, `--thumb-size`) per photo, made once for all photos, in parallel (`--jobs`), in `_gallery\thumbs\` (`--thumb-dir`). Re-runs only make the missing ones. `--thumbs-only` makes them without writing the page.
 - **Folders:** the tree on the left selects which photos take part. **Selecting a folder includes all its subfolders**; untick one to leave it out. The ranking is made **per group** (default: per top-level folder, i.e. per year; choose another level under *Per*), showing the top 50 of each (*Top*, `--top`). **Show more** reveals the next ones.
 - **Rankings:** overall (mean of all models, 0-100), mean stars, any single model by its own score, file name, or a **custom blend**: set a weight per model in the side panel (by default every model is first turned into a percentile among the selected photos, so no model counts for more just because its scores are spread wider). Blends can be saved under a name. Models where lower is better (such as NIQE) are handled.
 - **Compare side by side:** 2 to 4 rankings (A-D) next to each other for the same photos. Photos that are in the top of every list or of several lists are marked, each list shows how many photos it shares with the others, and hovering a photo highlights it in all lists.
@@ -204,7 +204,7 @@ It reads `iqa_results.json` and writes `gallery.html` plus a `gallery_data\` fol
 - **Large view:** click a photo for a big picture with every model's score and its rank in each compared list; arrow keys move through the list, Esc closes. **Open original** (also on every card on hover) opens the file itself; **Copy path** copies its full path.
 - **Export:** *Export list* saves the full paths of the photos shown (for copying the best 50 per year somewhere), *Export CSV* adds rank and scores.
 - The choices are kept in the address of the page, so a view can be bookmarked and reloaded.
-- Other options: `--out` for another output file, `--no-thumbs` to use the originals, `--embed` to put all data into `gallery.html` (one file, large for big libraries), `--results` for another results file.
+- Other options: `--out` for another output file (the data and thumbnails then go next to it), `--no-thumbs` to use the originals, `--embed` to put all data into `gallery.html` (one file, large for big libraries), `--results` for another results file.
 
 Run `imageautorater-gallery` again after each `imageautorater-rate` run to refresh the page.
 

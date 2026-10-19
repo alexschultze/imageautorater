@@ -7,6 +7,7 @@ iqa_scores.json
 iqa_scores.json.bak*
 iqa_results.json
 gallery.html
+_gallery/
 .iqa_thumbs/
 *.xmp
 *.xmp.bak

@@ -118,3 +118,6 @@ iqa_results.json (root)  ──►  gallery.py (build)  ──►  <out>/gallery
 4. Originals are linked by `file://` relative to the page, so the page must stay in (or below the same drive as) the photo root;
    `gallery.html` is written to `<root>/gallery.html` as today.
 5. No writing back (no star changes, no file moves/copies) from the page: export lists only.
+
+## 9. Update: one output folder
+Everything the gallery generates goes into `<root>/_gallery/` (`gallery.html`, `gallery_data/`, `thumbs/`). `imageautorater-rate` never scans `_gallery`, so thumbnails are never rated as photos. This replaces the `.iqa_thumbs` / `gallery.html`-in-root layout above.

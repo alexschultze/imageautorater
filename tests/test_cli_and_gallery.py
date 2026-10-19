@@ -66,7 +66,7 @@ def page_index(html: str) -> dict:
 def group_items(root, index: dict, key: str) -> list:
     """The items of one top-level group, read from its data file like the page does."""
     g = next(g for g in index["groups"] if g["k"] == key)
-    text = (root / unquote(g["file"])).read_text(encoding="utf-8")
+    text = (root / "_gallery" / unquote(g["file"])).read_text(encoding="utf-8")
     return json.loads(re.search(r"\]=(.*);\s*$", text, re.S).group(1))
 
 
@@ -77,7 +77,7 @@ def all_items(root, index: dict) -> list:
 def test_gallery_page_is_self_contained_and_carries_the_ranking(photo_folder, monkeypatch):
     monkeypatch.setattr("sys.argv", ["imageautorater-gallery", str(photo_folder), "--top", "2", "--jobs", "1"])
     gal.main()
-    html = (photo_folder / "gallery.html").read_text(encoding="utf-8")
+    html = (photo_folder / "_gallery" / "gallery.html").read_text(encoding="utf-8")
     index = page_index(html)
     items = all_items(photo_folder, index)
     assert index["top"] == 2 and index["models"] == ["musiq", "niqe"]
@@ -87,10 +87,10 @@ def test_gallery_page_is_self_contained_and_carries_the_ranking(photo_folder, mo
     assert {i["f"] for i in items} == {"a", "b", ""}
     best = max(items, key=lambda i: i["o"])
     assert best["p"] == "top.png" and best["n"] == [] and "landscape" in best["g"]
-    assert best["u"] == "top.png" and best["b"] == 1 and best["t"].startswith(".iqa_thumbs/")
+    assert best["b"] == 1 and best["t"].startswith("thumbs/") and best["u"] == "../top.png"
     assert len(best["m"]) == 2 and best["m"][0][1] == 80.0               # per-model values aligned with index["models"]
     assert index["people"] == ["Alice"] and index["tags"] == ["landscape"]
-    assert len(list((photo_folder / ".iqa_thumbs").glob("*.jpg"))) == 4
+    assert len(list((photo_folder / "_gallery" / "thumbs").glob("*.jpg"))) == 4
     assert "http://" not in html.replace("http://purl.org", "") and "https://" not in html   # no external resources
     assert "<script src=" not in html                                       # data files are added by the page on demand
 
@@ -98,22 +98,22 @@ def test_gallery_page_is_self_contained_and_carries_the_ranking(photo_folder, mo
 def test_gallery_embed_puts_everything_into_one_file(photo_folder, monkeypatch):
     monkeypatch.setattr("sys.argv", ["imageautorater-gallery", str(photo_folder), "--embed", "--jobs", "1"])
     gal.main()
-    html = (photo_folder / "gallery.html").read_text(encoding="utf-8")
-    assert html.count("window.__IQA_DATA=") == 3 and not (photo_folder / "gallery_data").exists()
+    html = (photo_folder / "_gallery" / "gallery.html").read_text(encoding="utf-8")
+    assert html.count("window.__IQA_DATA=") == 3 and not (photo_folder / "_gallery" / "gallery_data").exists()
 
 
 def test_gallery_reuses_thumbnails_and_skips_missing_photos(photo_folder, monkeypatch, capsys):
     argv = ["imageautorater-gallery", str(photo_folder), "--jobs", "1"]
     monkeypatch.setattr("sys.argv", argv)
     gal.main()
-    thumbs = {p.name: p.stat().st_mtime_ns for p in (photo_folder / ".iqa_thumbs").glob("*.jpg")}
+    thumbs = {p.name: p.stat().st_mtime_ns for p in (photo_folder / "_gallery" / "thumbs").glob("*.jpg")}
     (photo_folder / "b" / "3.png").unlink()
     gal.main()
-    assert {p.name: p.stat().st_mtime_ns for p in (photo_folder / ".iqa_thumbs").glob("*.jpg")} == thumbs   # nothing re-made
-    index = page_index((photo_folder / "gallery.html").read_text(encoding="utf-8"))
+    assert {p.name: p.stat().st_mtime_ns for p in (photo_folder / "_gallery" / "thumbs").glob("*.jpg")} == thumbs   # nothing re-made
+    index = page_index((photo_folder / "_gallery" / "gallery.html").read_text(encoding="utf-8"))
     assert len(all_items(photo_folder, index)) == 3
     assert [g["k"] for g in index["groups"]] == ["", "a"]
-    assert len(list((photo_folder / "gallery_data").glob("g_*.js"))) == 2          # the file of the emptied group "b" is removed
+    assert len(list((photo_folder / "_gallery" / "gallery_data").glob("g_*.js"))) == 2          # the file of the emptied group "b" is removed
 
 
 def test_thumbnails_are_capped_in_size_in_one_folder_and_made_in_parallel(tmp_path, monkeypatch):
@@ -134,9 +134,9 @@ def test_thumbnails_are_capped_in_size_in_one_folder_and_made_in_parallel(tmp_pa
     made = list(thumbs.glob("*.jpg"))
     assert len(made) == 6 and not list(thumbs.glob("*.tmp"))              # the broken file gets none; nothing half-written
     assert all(max(Image.open(p).size) == 300 for p in made)
-    items = all_items(root, page_index((root / "gallery.html").read_text(encoding="utf-8")))
+    items = all_items(root, page_index((root / "_gallery" / "gallery.html").read_text(encoding="utf-8")))
     broken = next(i for i in items if i["p"].endswith("broken.jpg"))
-    assert broken["t"] == "y0/broken.jpg"                                  # no thumbnail: falls back to the original
+    assert broken["t"] == "../y0/broken.jpg"                                  # no thumbnail: falls back to the original
 
 
 def test_thumbs_only_writes_no_page_and_odd_file_names_are_escaped(tmp_path, monkeypatch):
@@ -145,11 +145,11 @@ def test_thumbs_only_writes_no_page_and_odd_file_names_are_escaped(tmp_path, mon
     (root / pl.RESULTS_NAME).write_text(json.dumps({"models": {}, "images": {"2024/a b#1.png": {"rating_mean": 2, "models": {"musiq": {"rating": 2, "score": 40.0}}}}}), encoding="utf-8")
     monkeypatch.setattr("sys.argv", ["x", str(root), "--thumbs-only", "--jobs", "1"])
     gal.main()
-    assert not (root / "gallery.html").exists() and len(list((root / ".iqa_thumbs").glob("*.jpg"))) == 1
+    assert not (root / "_gallery" / "gallery.html").exists() and len(list((root / "_gallery" / "thumbs").glob("*.jpg"))) == 1
     monkeypatch.setattr("sys.argv", ["x", str(root), "--jobs", "1"])
     gal.main()
-    item = all_items(root, page_index((root / "gallery.html").read_text(encoding="utf-8")))[0]
-    assert item["u"] == "2024/a%20b%231.png" and item["p"] == "2024/a b#1.png"
+    item = all_items(root, page_index((root / "_gallery" / "gallery.html").read_text(encoding="utf-8")))[0]
+    assert item["u"] == "../2024/a%20b%231.png" and item["p"] == "2024/a b#1.png"
 
 
 def test_page_logic_in_node(tmp_path):
@@ -186,7 +186,7 @@ def test_page_in_a_browser(tmp_path, monkeypatch):
         page = browser.new_page()
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
-        page.goto((root / "gallery.html").as_uri())
+        page.goto((root / "_gallery" / "gallery.html").as_uri())
         page.wait_for_selector(".card")
         assert page.locator(".group").count() == 2 and page.locator(".group").first.locator(".card").count() == 3
         page.locator(".node", has_text="2023").locator("input").first.click()     # untick one year
@@ -196,3 +196,12 @@ def test_page_in_a_browser(tmp_path, monkeypatch):
         assert page.locator(".col").count() == 2 and "in all 2 lists: 3" in page.locator(".group h2").first.inner_text()
         assert not errors
         browser.close()
+
+
+def test_everything_generated_is_in_the_gallery_folder_and_never_rated(photo_folder, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["x", str(photo_folder), "--jobs", "1"])
+    gal.main()
+    made = {p.relative_to(photo_folder).parts[0] for p in photo_folder.rglob("*") if p.is_file()}
+    assert made == {"a", "b", "top.png", "iqa_results.json", "_gallery"}          # nothing else was added to the photo folder
+    assert (photo_folder / "_gallery" / "gallery.html").is_file()
+    assert [p.name for p in pl.find_images(photo_folder, True, False)] == ["1.png", "2.png", "3.png", "top.png"]   # thumbnails are not photos
