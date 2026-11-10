@@ -72,4 +72,59 @@ assert.strictEqual(L.csvCell('a,b'), '"a,b"');
 assert.strictEqual(L.csvCell('say "x"'), '"say ""x"""');
 assert.strictEqual(L.fullPath('D:\\Photos', '2023/a.jpg'), 'D:\\Photos\\2023\\a.jpg');
 assert.strictEqual(L.fullPath('/mnt/p/', '2023/a.jpg'), '/mnt/p/2023/a.jpg');
-console.log('ok');
+
+// people filter
+const face = (fc, n) => ({p: 'x.jpg', f: '', fc, n: n || []});
+assert.ok(L.peopleOk(face(null), ''));
+assert.ok(L.peopleOk(face(2), 'with') && !L.peopleOk(face(0), 'with') && !L.peopleOk(face(null), 'with'));
+assert.ok(L.peopleOk(face(1, ['Anna']), 'named') && !L.peopleOk(face(1), 'named'));
+assert.ok(L.peopleOk(face(0), 'without') && !L.peopleOk(face(null), 'without') && !L.peopleOk(face(1), 'without'));
+
+// copy plan and sub folder names
+assert.deepStrictEqual(L.cleanSub('_gallery\\selection/ best '), ['_gallery', 'selection', 'best']);
+assert.strictEqual(L.cleanSub('../x'), null);
+assert.strictEqual(L.cleanSub('  '), null);
+assert.strictEqual(L.cleanSub('a:b'), null);
+assert.deepStrictEqual(L.planCopy(['2023/a.jpg', '2024/a.jpg', '2024/A.JPG', '2024/noext'], 'keep').map(x => x.dst), ['2023/a.jpg', '2024/a.jpg', '2024/A.JPG', '2024/noext']);
+assert.deepStrictEqual(L.planCopy(['2023/a.jpg', '2024/a.jpg', '2024/A.JPG', '2024/noext'], 'flat').map(x => x.dst), ['a.jpg', 'a_2.jpg', 'A_3.JPG', 'noext']);
+
+// copying with the File System Access API, tested with an in-memory stand-in for the folder handles
+function fakeDir(name) {
+  const e = new Map();
+  const notFound = () => Object.assign(new Error('not found'), {name: 'NotFoundError'});
+  return {
+    kind: 'directory', name, e,
+    async getDirectoryHandle(n, o) { if (!e.has(n)) { if (!(o && o.create)) throw notFound(); e.set(n, fakeDir(n)); } return e.get(n); },
+    async getFileHandle(n, o) {
+      if (!e.has(n)) { if (!(o && o.create)) throw notFound(); e.set(n, fakeFile(n, '')); }
+      return e.get(n);
+    },
+  };
+}
+function fakeFile(name, text) {
+  const f = {kind: 'file', name, text, async getFile() { return new Blob([f.text]); }, async createWritable() {
+    const chunks = [];
+    return new WritableStream({write(c) { chunks.push(c); }, async close() { f.text = Buffer.concat(chunks).toString(); }});
+  }};
+  return f;
+}
+(async () => {
+  const root = fakeDir('Photos');
+  const y = await root.getDirectoryHandle('2023', {create: true});
+  y.e.set('a.jpg', fakeFile('a.jpg', 'AAAA'));
+  (await y.getDirectoryHandle('sub', {create: true})).e.set('b.jpg', fakeFile('b.jpg', 'BB'));
+  const plan = L.planCopy(['2023/a.jpg', '2023/sub/b.jpg', '2023/missing.jpg'], 'keep');
+  const prog = [];
+  let res = await L.copyFiles(root, ['_gallery', 'pick'], plan, (n, t) => prog.push(n + '/' + t));
+  assert.deepStrictEqual([res.copied, res.skipped, res.failed.length], [2, 0, 1]);
+  assert.strictEqual(res.failed[0].rel, '2023/missing.jpg');
+  assert.deepStrictEqual(prog, ['1/3', '2/3', '3/3']);
+  const out = await (await (await (await root.getDirectoryHandle('_gallery')).getDirectoryHandle('pick')).getDirectoryHandle('2023')).getFileHandle('a.jpg');
+  assert.strictEqual(out.text, 'AAAA');
+  res = await L.copyFiles(root, ['_gallery', 'pick'], plan, null);     // repeated: same size = skipped, nothing rewritten
+  assert.deepStrictEqual([res.copied, res.skipped, res.failed.length], [0, 2, 1]);
+  const flat = await L.copyFiles(root, ['flat'], L.planCopy(['2023/a.jpg', '2023/sub/b.jpg'], 'flat'), null);
+  assert.strictEqual(flat.copied, 2);
+  assert.strictEqual((await (await root.getDirectoryHandle('flat')).getFileHandle('b.jpg')).text, 'BB');
+  console.log('ok');
+})().catch(e => { console.error(e); process.exit(1); });

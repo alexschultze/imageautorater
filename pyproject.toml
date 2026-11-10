@@ -30,6 +30,7 @@ imageautorater-rate = "imageautorater.pipeline:main"
 imageautorater-write-xmp = "imageautorater.write_xmp:main"
 imageautorater-write-exif = "imageautorater.write_exif:main"
 imageautorater-gallery = "imageautorater.gallery:main"
+imageautorater-export = "imageautorater.export:main"
 # the GUI (PLAN.md) will add:  [project.gui-scripts]  imageautorater = "imageautorater.gui:main"
 
 [dependency-groups]

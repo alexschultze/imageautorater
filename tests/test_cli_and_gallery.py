@@ -292,3 +292,114 @@ def test_thumbnails_are_saved_during_the_first_scoring_pass(tmp_path, monkeypatc
     other = (tmp_path / "t2", 1000)
     pl.run_models(root, paths, ["niqe"], "cpu", 512, cache, root / "c.json", thumbs=other)
     assert not other[0].exists()
+
+
+def test_people_counts_in_the_page_data(tmp_path, monkeypatch):
+    root = tmp_path / "photos"
+    images = {}
+    for rel, people in {"a.png": [{"name": "Alice", "cluster": 0}], "b.png": [{"name": None, "cluster": 3}],
+                        "c.png": [{"name": None, "cluster": -1}], "d.png": [], "e.png": None}.items():
+        make_photo(root, rel, "A")
+        images[rel] = {"rating_mean": 3, "models": {"musiq": {"rating": 3, "score": 50.0}}}
+        if people is not None:
+            images[rel]["people"] = people
+    (root / pl.RESULTS_NAME).write_text(json.dumps({"models": {}, "images": images}), encoding="utf-8")
+    monkeypatch.setattr("sys.argv", ["x", str(root), "--jobs", "1"])
+    gal.main()
+    items = {i["p"]: i for i in all_items(root, page_index((root / "_gallery" / "gallery.html").read_text(encoding="utf-8")))}
+    assert items["a.png"]["fc"] == 1 and items["a.png"]["n"] == ["Alice"]
+    assert items["b.png"]["fc"] == 1 and items["b.png"]["n"] == []        # an unnamed face is still a person
+    assert items["c.png"]["fc"] == 0                                        # marked as "not a person" (junk)
+    assert items["d.png"]["fc"] == 0 and "fc" not in items["e.png"]         # no face found / faces not analysed
+
+
+def test_export_copies_a_list_into_a_subfolder(tmp_path, capsys):
+    import imageautorater.export as ex
+
+    root = tmp_path / "photos"
+    for rel in ("2023/a.png", "2024/a.png", "2024/sub/b.png"):
+        make_photo(root, rel, "A")
+    lst = tmp_path / "list.txt"
+    lst.write_text(f"2023/a.png\n{root}/2024/a.png\n2024\\sub\\b.png\n../evil.png\nC:/elsewhere/x.png\n2023/a.png\n", encoding="utf-8")
+    ex.main([str(root), str(lst), "--to", "_gallery/pick", "--dry-run"])
+    assert not (root / "_gallery").exists()
+    ex.main([str(root), str(lst), "--to", "_gallery/pick"])
+    assert sorted(p.relative_to(root / "_gallery" / "pick").as_posix() for p in (root / "_gallery" / "pick").rglob("*.png")) == ["2023/a.png", "2024/a.png", "2024/sub/b.png"]
+    ex.main([str(root), str(lst), "--to", "_gallery/pick"])
+    assert "already there 3" in capsys.readouterr().out                    # a repeated run copies nothing
+    ex.main([str(root), str(lst), "--to", "flat", "--flat"])
+    assert sorted(p.name for p in (root / "flat").iterdir()) == ["a.png", "a_2.png", "b.png"]   # the name clash got a number
+    with pytest.raises(SystemExit):
+        ex.main([str(root), str(lst), "--to", "../outside"])
+
+
+def test_people_filter_picks_and_copy_in_a_browser(tmp_path, monkeypatch):
+    """People filter, picking, and copying with the real File System Access API (an origin-private folder stands in for the
+    folder picker; the page is served from localhost because file:// pages may not use it). Skipped without playwright/Chromium."""
+    import functools
+    import http.server
+    import threading
+
+    sync_api = pytest.importorskip("playwright.sync_api")
+    root = tmp_path / "photos"
+    images = {}
+    for i, rel in enumerate(["2023/a.png", "2023/sub/b.png", "2024/c.png", "2024/d.png"]):
+        make_photo(root, rel, "A", size=60 + i)
+        images[rel] = {"rating_mean": 3, "models": {"musiq": {"rating": 3, "score": 50.0 + i}},
+                       "people": [{"name": "Anna" if i == 0 else None, "cluster": 0 if i == 0 else 2}] if i < 2 else []}
+    (root / pl.RESULTS_NAME).write_text(json.dumps({"folder": str(root), "models": {"musiq": {"range": [0, 100]}}, "images": images}), encoding="utf-8")
+    monkeypatch.setattr("sys.argv", ["x", str(root), "--jobs", "1"])
+    gal.main()
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root))
+    handler.log_message = lambda *a, **k: None
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with sync_api.sync_playwright() as p:
+            try:
+                browser = p.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH") or None, args=["--no-sandbox"])
+            except Exception as e:
+                pytest.skip(f"no browser: {str(e)[:60]}")
+            page = browser.new_page()
+            errors = []
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            page.goto(f"http://127.0.0.1:{server.server_address[1]}/_gallery/gallery.html")
+            page.wait_for_selector(".card")
+            assert page.locator(".card").count() == 4
+            page.locator("#people").select_option("with")
+            page.wait_for_function("document.querySelectorAll('.card').length === 2")
+            page.locator("#people").select_option("named")
+            page.wait_for_function("document.querySelectorAll('.card').length === 1")
+            page.locator("#people").select_option("without")
+            page.wait_for_function("document.querySelectorAll('.card').length === 2")
+            page.locator("#people").select_option("with")
+            page.wait_for_function("document.querySelectorAll('.card').length === 2")
+            page.locator("#pickshown").click()
+            assert page.locator("#pickct").inner_text() == "2 picked"
+            page.locator(".card").first.locator(".pick").click()                  # unpick one
+            assert page.locator("#pickct").inner_text() == "1 picked"
+            page.evaluate("""async () => {
+              const dir = await navigator.storage.getDirectory(), photos = await dir.getDirectoryHandle('Photos', {create: true});
+              await photos.getDirectoryHandle('_gallery', {create: true});
+              for (const rel of ['2023/a.png', '2023/sub/b.png']) {
+                const parts = rel.split('/'); let d = photos;
+                for (const q of parts.slice(0, -1)) d = await d.getDirectoryHandle(q, {create: true});
+                const w = await (await d.getFileHandle(parts[parts.length - 1], {create: true})).createWritable();
+                await w.write(await (await fetch('../' + rel)).arrayBuffer()); await w.close();
+              }
+              window.showDirectoryPicker = async () => photos;
+            }""")
+            page.locator("#copybtn").click()
+            page.locator("#cdlayout").select_option("flat")
+            page.locator("#cdgo").click()
+            page.wait_for_function("document.getElementById('cdstatus').textContent.startsWith('Done')")
+            assert "1 copied, 0 already there" in page.locator("#cdstatus").inner_text()
+            names = page.evaluate("""async () => {
+              const photos = await (await navigator.storage.getDirectory()).getDirectoryHandle('Photos');
+              const sel = await (await photos.getDirectoryHandle('_gallery')).getDirectoryHandle('selection');
+              const out = []; for await (const [n, h] of sel.entries()) out.push(n + ':' + (await h.getFile()).size); return out; }""")
+            assert names == [f"a.png:{(root / '2023' / 'a.png').stat().st_size}"]    # b.png ranks first and was unpicked
+            assert not errors
+            browser.close()
+    finally:
+        server.shutdown()

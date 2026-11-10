@@ -12,11 +12,14 @@ $('title').firstChild.textContent = D.title + ' ';
 // ---- state (kept in the URL hash, so a view can be bookmarked) --------------------------------------------------------
 const S = {
   view: 'list', rank: 'overall', dir: -1, cmp: ['overall', 'stars'], da: 'overall', db: 'stars', dshow: 'all',
-  n: D.top || 50, depth: maxDepth >= 1 ? 1 : 0, minstars: 0, person: '', tag: '', q: '',
+  n: D.top || 50, depth: maxDepth >= 1 ? 1 : 0, minstars: 0, pp: '', person: '', tag: '', q: '', picks: new Set(),
   sel: new Set(tree.paths), blend: {w: {}, pct: true}, open: new Set(),
 };
 let saved = {};   // name -> {w: {model name: weight}, pct}
 try { saved = JSON.parse(localStorage.getItem('iqa_blends') || '{}') || {}; } catch (e) { saved = {}; }
+const picksKey = 'iqa_picks:' + D.root;
+try { JSON.parse(localStorage.getItem(picksKey) || '[]').forEach(p => S.picks.add(p)); } catch (e) { /* no storage */ }
+const persistPicks = () => { try { localStorage.setItem(picksKey, JSON.stringify([...S.picks])); } catch (e) { /* private window */ } };
 const persistBlends = () => { try { localStorage.setItem('iqa_blends', JSON.stringify(saved)); } catch (e) { /* private window */ } };
 
 function readHash() {
@@ -28,7 +31,7 @@ function readHash() {
   if (h.get('c')) S.cmp = h.get('c').split(',').filter(Boolean).slice(0, 4);
   S.da = h.get('da') || S.da; S.db = h.get('db') || S.db; S.dshow = h.get('ds') || S.dshow;
   S.n = Math.max(1, num('n', S.n)); S.depth = Math.min(maxDepth, Math.max(0, num('g', S.depth)));
-  S.minstars = num('ms', 0); S.person = h.get('pe') || ''; S.tag = h.get('tg') || ''; S.q = h.get('q') || '';
+  S.minstars = num('ms', 0); S.pp = ['with', 'named', 'without'].includes(h.get('pp')) ? h.get('pp') : ''; S.person = h.get('pe') || ''; S.tag = h.get('tg') || ''; S.q = h.get('q') || '';
   if (h.has('s')) S.sel = L.decodeSel(tree, h.get('s'));
   if (h.has('bw')) {
     S.blend.w = {};
@@ -41,6 +44,7 @@ function writeHash() {
   h.set('v', S.view); h.set('r', S.rank); h.set('o', S.dir); h.set('c', S.cmp.join(','));
   h.set('da', S.da); h.set('db', S.db); h.set('ds', S.dshow); h.set('n', S.n); h.set('g', S.depth);
   if (S.minstars) h.set('ms', S.minstars);
+  if (S.pp) h.set('pp', S.pp);
   if (S.person) h.set('pe', S.person);
   if (S.tag) h.set('tg', S.tag);
   if (S.q) h.set('q', S.q);
@@ -85,7 +89,7 @@ function fillRankers(sel, value, none) {
 // ---- controls ---------------------------------------------------------------------------------------------------
 function buildControls() {
   fillRankers($('rank'), validId(S.rank) ? S.rank : 'overall');
-  $('dir').value = S.dir; $('topn').value = S.n; $('minstars').value = S.minstars; $('q').value = S.q;
+  $('dir').value = S.dir; $('topn').value = S.n; $('minstars').value = S.minstars; $('people').value = S.pp; $('q').value = S.q;
   const dp = $('depth'); dp.textContent = '';
   opt(dp, 0, 'all selected, merged');
   for (let d = 1; d <= maxDepth; d++) opt(dp, d, d === 1 ? 'top-level folder (year)' : 'folder level ' + d);
@@ -216,6 +220,7 @@ function selectedItems() {
   neededGroups().forEach(g => (window.__IQA_DATA[g.k] || []).forEach(it => {
     if (!S.sel.has(it.f)) return;
     if (min && !(it.r != null && it.r >= min - 0.5)) return;
+    if (!L.peopleOk(it, S.pp)) return;
     if (S.person && !it.n.includes(S.person)) return;
     if (S.tag && !it.g.includes(S.tag)) return;
     if (q && !it.p.toLowerCase().includes(q)) return;
@@ -237,6 +242,10 @@ function card(it, rank, o) {
   const open = el('a', 'open', 'open'); open.href = it.u; open.target = '_blank'; open.rel = 'noopener'; open.title = 'Open the original file';
   open.addEventListener('click', e => e.stopPropagation());
   t.appendChild(open);
+  const pk = document.createElement('input'); pk.type = 'checkbox'; pk.className = 'pick'; pk.title = 'Pick this photo';
+  pk.checked = S.picks.has(it.p); c.classList.toggle('picked', pk.checked);
+  pk.addEventListener('click', e => { e.stopPropagation(); setPick(it.p, pk.checked); });
+  t.appendChild(pk);
   c.appendChild(t);
   const m = el('div', 'meta');
   m.appendChild(el('div', 'name', it.p.split('/').pop()));
@@ -271,6 +280,67 @@ function section(parent, count, make, observe) {
   }
 }
 addEventListener('scroll', () => autoGrow && autoGrow(), {passive: true});
+
+// ---- picks ------------------------------------------------------------------------------------------------------
+function syncPicks() {
+  document.querySelectorAll('.card').forEach(c => {
+    const on = S.picks.has(c.dataset.p);
+    c.classList.toggle('picked', on);
+    const pk = c.querySelector('.pick'); if (pk) pk.checked = on;
+  });
+  $('pickct').textContent = S.picks.size + ' picked';
+}
+function setPick(p, on) { if (on) S.picks.add(p); else S.picks.delete(p); persistPicks(); syncPicks(); }
+const shownPaths = () => { const seen = new Set(), out = []; shown.forEach(s => s.items.forEach(it => { if (!seen.has(it.p)) { seen.add(it.p); out.push(it.p); } })); return out; };
+$('pickshown').addEventListener('click', () => { shownPaths().forEach(p => S.picks.add(p)); persistPicks(); syncPicks(); });
+$('pickclear').addEventListener('click', () => { S.picks.clear(); persistPicks(); syncPicks(); });
+
+// ---- copy the picked photos into a subfolder --------------------------------------------------------------------
+const dlg = $('copydlg');
+function copyRels() { return $('cdwhich').value === 'picked' ? [...S.picks].sort(L.natural) : shownPaths(); }
+function updateCopyNote() {
+  const sub = L.cleanSub($('cdsub').value);
+  $('cdnote').textContent = !sub ? 'Enter a folder name below the photo folder (no \u201c..\u201d).'
+    : sub[0] !== '_gallery' ? 'Photos copied outside the _gallery folder are found by the next imageautorater-rate run and rated again as duplicates.' : '';
+}
+$('copybtn').addEventListener('click', () => {
+  const w = $('cdwhich'); w.textContent = '';
+  const sh = shownPaths().length;
+  if (S.picks.size) opt(w, 'picked', 'the ' + S.picks.size + ' picked photos');
+  opt(w, 'shown', 'the ' + sh + ' photos shown now');
+  w.value = S.picks.size ? 'picked' : 'shown';
+  $('cdstatus').textContent = ''; updateCopyNote();
+  if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
+});
+$('cdsub').addEventListener('input', updateCopyNote);
+function cdStatus(text, code) { const s = $('cdstatus'); s.textContent = text; if (code) { const c = el('code', null, code); s.appendChild(c); } }
+$('cdgo').addEventListener('click', async () => {
+  const sub = L.cleanSub($('cdsub').value), rels = copyRels();
+  if (!sub) return cdStatus('The subfolder name is not valid.');
+  if (!rels.length) return cdStatus('There are no photos to copy.');
+  if (!window.showDirectoryPicker) return cdStatus('This browser cannot copy files from a page. Use Chrome or Edge, or \u201cDownload list + command\u201d.');
+  let root;
+  try { root = await window.showDirectoryPicker({mode: 'readwrite'}); } catch (e) { return cdStatus(''); }   // cancelled
+  try { await root.getDirectoryHandle('_gallery'); } catch (e) {
+    if (!confirm('The chosen folder (' + root.name + ') has no _gallery folder inside. Copy from it anyway?')) return cdStatus('');
+  }
+  $('cdgo').disabled = true;
+  try {
+    const plan = L.planCopy(rels, $('cdlayout').value);
+    const res = await L.copyFiles(root, sub, plan, (n, t) => cdStatus('Copying ' + n + ' / ' + t + ' \u2026'));
+    cdStatus('Done: ' + res.copied + ' copied, ' + res.skipped + ' already there' + (res.failed.length ? ', ' + res.failed.length + ' failed: ' +
+      res.failed.slice(0, 3).map(f => f.rel + ' (' + f.err + ')').join('; ') + (res.failed.length > 3 ? ' \u2026' : '') : '') + '. Folder: ' + root.name + '/' + sub.join('/'));
+  } catch (e) { cdStatus('Copy stopped: ' + ((e && e.message) || e)); }
+  $('cdgo').disabled = false;
+});
+$('cdlist').addEventListener('click', () => {
+  const sub = L.cleanSub($('cdsub').value), rels = copyRels();
+  if (!sub || !rels.length) return cdStatus(!sub ? 'The subfolder name is not valid.' : 'There are no photos to copy.');
+  download('selection.txt', rels.join('\n') + '\n', 'text/plain');
+  const q = s => '"' + s.replace(/"/g, '') + '"';
+  cdStatus('Saved selection.txt (' + rels.length + ' photos). Run, from the folder where you saved it:',
+    'imageautorater-export ' + q(D.root) + ' selection.txt --to ' + q(sub.join('/')) + ($('cdlayout').value === 'flat' ? ' --flat' : ''));
+});
 
 // ---- views ------------------------------------------------------------------------------------------------------
 let shown = [];   // what is on screen, for the export: [{group, ranker, items}]
@@ -366,12 +436,14 @@ async function render() {
   main.textContent = '';
   const items = selectedItems();
   $('count').textContent = items.length + ' photos selected' + (D.mode ? ' · ' + D.mode + ' scoring' : '');
+  $('pickct').textContent = S.picks.size + ' picked';
   document.documentElement.style.setProperty('--hh', document.querySelector('header').offsetHeight + 'px');
   if (!items.length) { main.appendChild(el('div', 'empty', 'No photos match these filters.')); return; }
   const groups = groupsOf(items);
   if (S.view === 'list') viewList(main, groups);
   else if (S.view === 'compare') viewCompare(main, groups);
   else viewDelta(main, groups);
+  syncPicks();
 }
 
 // ---- large view -------------------------------------------------------------------------------------------------
@@ -451,6 +523,7 @@ $('dir').addEventListener('change', () => { S.dir = +$('dir').value; render(); }
 $('topn').addEventListener('change', () => { S.n = Math.max(1, Math.min(1000, +$('topn').value || 50)); render(); });
 $('depth').addEventListener('change', () => { S.depth = +$('depth').value; render(); });
 ['minstars', 'person', 'tag'].forEach(id => $(id).addEventListener('change', () => { S[id] = id === 'minstars' ? +$(id).value : $(id).value; render(); }));
+$('people').addEventListener('change', () => { S.pp = $('people').value; render(); });
 $('q').addEventListener('input', () => { S.q = $('q').value; render(); });
 $('all').addEventListener('click', () => { S.sel = new Set(tree.paths); buildTreeUi(); render(); });
 $('none').addEventListener('click', () => { S.sel = new Set(); buildTreeUi(); render(); });

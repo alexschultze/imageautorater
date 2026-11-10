@@ -87,6 +87,7 @@ def build_data(folder: Path, results: dict, out_dir: Path, thumb_dir: Path, thum
             per_model.append([v["rating"], v["score"], round(nv, 1)])
             norms.append(nv)
         folder_rel = Path(rel).parent.as_posix()
+        people = entry.get("people")
         items.append({
             "p": rel,
             "f": "" if folder_rel == "." else folder_rel,
@@ -96,8 +97,10 @@ def build_data(folder: Path, results: dict, out_dir: Path, thumb_dir: Path, thum
             "r": entry.get("rating_mean"),
             "m": per_model,
             "g": list(entry.get("tags", {})),
-            "n": sorted({p["name"] for p in entry.get("people", []) if p.get("name")}),
+            "n": sorted({p["name"] for p in people or [] if p.get("name")}),
         })
+        if people is not None:                       # faces were analysed: how many of them are people (not marked as junk)
+            items[-1]["fc"] = sum(1 for p in people if p.get("name") or p.get("cluster") != -1)
         if browser:
             items[-1]["b"] = 1                       # the original can be shown in the large view
     if missing:

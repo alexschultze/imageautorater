@@ -15,6 +15,7 @@ Commands, in the order you use them:
 | `imageautorater-write-xmp` | writes the results into XMP sidecar files (`photo.xmp`) | no |
 | `imageautorater-write-exif` | writes the results inside JPEG and PNG files | **yes, metadata only** |
 | `imageautorater-gallery` | builds a web page of the ranking | no |
+| `imageautorater-export` | copies photos from a list (picked in the gallery) into a subfolder | no (read only) |
 
 ## Install
 
@@ -83,6 +84,7 @@ src/imageautorater/
     write_xmp.py        XMP sidecar files (imageautorater-write-xmp)
     write_exif.py       metadata inside JPEG/PNG files (imageautorater-write-exif)
     gallery.py          web page builder (imageautorater-gallery)
+    export.py           copy a list of photos into a subfolder (imageautorater-export)
     gallery_thumbs.py   thumbnails for the gallery (parallel, resumable)
     gallery_page/       the page itself: index.html, gallery.css, gallery.js, logic.js (pure functions, tested with node)
 tests/                  pytest
@@ -204,6 +206,8 @@ It reads `iqa_results.json` and puts **everything it generates into one subfolde
 - **Rank change:** pick ranking A and B; shows the photos in the top of either, with their rank in B, biggest change first (green: B ranks it higher). Restrict to the photos only in A's top or only in B's top.
 - **Filters:** minimum stars, person, keyword, file name.
 - **Large view:** click a photo for a big picture with every model's score and its rank in each compared list; arrow keys move through the list, Esc closes. **Open original** (also on every card on hover) opens the file itself; **Copy path** copies its full path.
+- **People:** the *People* filter shows only photos with people (a face was found, named or not), only photos with named people, or only photos without any (faces you marked as "not a person" do not count; photos whose faces were never analysed are in neither of the last two). The *Person* filter picks one named person.
+- **Pick and copy:** tick the box on a photo to pick it (the picks are remembered in the browser; *Pick all shown* picks everything that is shown, *Clear picks* empties it). *Copy to subfolder...* copies the picked photos, or if none are picked all shown ones, into a subfolder of the photo folder (default `_gallery\selection`), keeping the folder structure or all in one folder (a name clash gets `_2`, `_3`, ...). In Chrome and Edge the page does the copy itself: you choose the photo folder once and allow access, nothing is uploaded, and photos already copied with the same size are skipped. In other browsers use *Download list + command* and run `imageautorater-export "D:\Photos" selection.txt --to _gallery/selection [--flat] [--dry-run]`. Originals are only read. A target outside `_gallery` is found by the next `imageautorater-rate` run and its photos are rated again as duplicates.
 - **Export:** *Export list* saves the full paths of the photos shown (for copying the best 50 per year somewhere), *Export CSV* adds rank and scores.
 - The choices are kept in the address of the page, so a view can be bookmarked and reloaded.
 - Other options: `--out` for another output file (the data and thumbnails then go next to it), `--no-thumbs` to use the originals, `--embed` to put all data into `gallery.html` (one file, large for big libraries), `--results` for another results file.

@@ -158,6 +158,69 @@
     return rows;
   };
 
+
+  // ---- people ---------------------------------------------------------------------------------------------
+  // it.fc = number of faces found that are people (null: faces were not analysed for this photo), it.n = named people.
+  // mode: '' any photo, 'with' a face was found, 'named' a recognised person, 'without' analysed and no face found
+  L.peopleOk = function (it, mode) {
+    if (!mode) return true;
+    if (mode === 'with') return it.fc != null && it.fc > 0;
+    if (mode === 'named') return it.n.length > 0;
+    if (mode === 'without') return it.fc === 0;
+    return true;
+  };
+
+  // ---- copying the picked photos into a subfolder ------------------------------------------------------------
+  L.baseName = rel => rel.slice(rel.lastIndexOf('/') + 1);
+  // A subfolder path typed by the user -> clean segments, or null when it is empty or tries to leave the photo folder.
+  L.cleanSub = function (text) {
+    const segs = String(text || '').split(/[\\/]+/).map(x => x.trim()).filter(Boolean);
+    if (!segs.length || segs.some(x => x === '.' || x === '..' || /[<>:"|?*\u0000-\u001f]/.test(x))) return null;
+    return segs;
+  };
+  // layout 'keep': the photo's own folders below the subfolder; 'flat': all in the subfolder, a clash gets _2, _3, ...
+  L.planCopy = function (rels, layout) {
+    const used = new Set(), out = [];
+    rels.forEach(rel => {
+      let dst = rel;
+      if (layout === 'flat') {
+        const base = L.baseName(rel), dot = base.lastIndexOf('.'), stem = dot > 0 ? base.slice(0, dot) : base, ext = dot > 0 ? base.slice(dot) : '';
+        dst = base;
+        for (let k = 2; used.has(dst.toLowerCase()); k++) dst = stem + '_' + k + ext;
+      }
+      used.add(dst.toLowerCase());
+      out.push({src: rel, dst});
+    });
+    return out;
+  };
+  // Copy with the File System Access API: root = the photo folder handle, sub = array of folder names below it.
+  // A file that already exists with the same size is skipped, so a repeated copy is cheap. Returns {copied, skipped, failed}.
+  L.copyFiles = async function (root, sub, plan, onProgress) {
+    const walk = async (dir, parts, create) => { for (const p of parts) dir = await dir.getDirectoryHandle(p, {create}); return dir; };
+    const base = await walk(root, sub, true);
+    const res = {copied: 0, skipped: 0, failed: []};
+    for (let i = 0; i < plan.length; i++) {
+      const {src, dst} = plan[i];
+      try {
+        const sp = src.split('/'), file = await (await (await walk(root, sp.slice(0, -1), false)).getFileHandle(sp[sp.length - 1])).getFile();
+        const dp = dst.split('/'), dir = await walk(base, dp.slice(0, -1), true);
+        let same = false;
+        try { same = (await (await dir.getFileHandle(dp[dp.length - 1])).getFile()).size === file.size; } catch (e) { /* not there yet */ }
+        if (same) res.skipped++;
+        else {
+          const w = await (await dir.getFileHandle(dp[dp.length - 1], {create: true})).createWritable();
+          try {
+            if (file.stream) await file.stream().pipeTo(w);       // streams the bytes and closes the file
+            else { await w.write(file); await w.close(); }
+          } catch (e) { try { await w.abort(); } catch (e2) { /* already closed */ } throw e; }
+          res.copied++;
+        }
+      } catch (e) { res.failed.push({rel: src, err: String((e && e.message) || e)}); }
+      if (onProgress) onProgress(i + 1, plan.length);
+    }
+    return res;
+  };
+
   // ---- export ---------------------------------------------------------------------------------------------
   L.csvCell = v => { const s = v == null ? '' : String(v); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   L.fullPath = function (rootDir, rel) {

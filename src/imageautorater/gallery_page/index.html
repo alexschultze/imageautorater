@@ -28,9 +28,16 @@
   </div>
   <div class="bar filters">
     <label>Min stars <select id="minstars"><option value="0">any</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
+    <label>People <select id="people"><option value="">any photo</option><option value="with">with people</option><option value="named">with named people</option><option value="without">without people</option></select></label>
     <label>Person <select id="person"></select></label>
     <label>Keyword <select id="tag"></select></label>
     <label>Search <input id="q" type="search" placeholder="file name" size="14"></label>
+  </div>
+  <div class="bar picks">
+    <span id="pickct">0 picked</span>
+    <button id="pickshown" title="Pick every photo that is shown now">Pick all shown</button>
+    <button id="pickclear">Clear picks</button>
+    <button id="copybtn" class="primary" title="Copy the picked photos (or the shown ones) into a subfolder of the photo folder">Copy to subfolder&hellip;</button>
   </div>
 </header>
 <div id="layout">
@@ -48,6 +55,21 @@
   </aside>
   <main id="main"></main>
 </div>
+<dialog id="copydlg">
+  <form method="dialog">
+    <h3>Copy photos into a subfolder</h3>
+    <label>Which photos <select id="cdwhich"></select></label>
+    <label>Subfolder of the photo folder <input id="cdsub" value="_gallery/selection" size="32"></label>
+    <label>Layout <select id="cdlayout"><option value="keep">keep the folder structure</option><option value="flat">all in one folder</option></select></label>
+    <p class="hint" id="cdnote"></p>
+    <div id="cdstatus" class="hint"></div>
+    <div class="bar">
+      <button type="button" id="cdgo" class="primary">Choose the photo folder and copy</button>
+      <button type="button" id="cdlist" title="For browsers that cannot copy files from a page">Download list + command</button>
+      <button value="close">Close</button>
+    </div>
+  </form>
+</dialog>
 <div id="lb"><div id="lbimg"></div><div id="lbside"></div><button id="lbx" title="Close (Esc)">&times;</button></div>
 <script id="index" type="application/json">/*__INDEX__*/null</script>
 <!--__DATA__-->
